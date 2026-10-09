@@ -1,6 +1,6 @@
 
--- EGG FINDER V18
--- DATOS REPLICADOS Y OBJETOS DINAMICOS
+-- EGG FINDER V19
+-- INSPECTOR DE HUEVOS COLOCADOS
 
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
@@ -15,7 +15,7 @@ gui.ResetOnSpawn = false
 gui.Parent = pg
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0.46,0,0.70,0)
+frame.Size = UDim2.new(0.46,0,0.7,0)
 frame.Position = UDim2.new(0.51,0,0.14,0)
 frame.BackgroundColor3 = Color3.fromRGB(15,15,25)
 frame.Active = true
@@ -27,10 +27,10 @@ title.Size = UDim2.new(1,-35,0,34)
 title.BackgroundColor3 = Color3.fromRGB(35,35,55)
 title.TextColor3 = Color3.fromRGB(0,255,120)
 title.TextSize = 15
-title.Text = "EGG FINDER V18"
+title.Text = "EGG FINDER V19"
 title.Parent = frame
 
-local function makeButton(txt,x,w,color)
+local function button(txt,x,w,color)
     local b = Instance.new("TextButton")
     b.Size = UDim2.new(w,0,0,34)
     b.Position = UDim2.new(x,0,0,36)
@@ -42,12 +42,12 @@ local function makeButton(txt,x,w,color)
     return b
 end
 
-local copy = makeButton(
+local copy = button(
     "COPIAR TODO",0,0.49,
     Color3.fromRGB(25,110,65)
 )
 
-local refresh = makeButton(
+local refresh = button(
     "REINICIAR",0.51,0.49,
     Color3.fromRGB(35,85,150)
 )
@@ -80,197 +80,189 @@ output.Parent = scroll
 
 local lines = {}
 local connections = {}
-local running = false
-local generation = 0
+local runId = 0
 local eventCount = 0
-local maxEvents = 100
-
-local keywords = {
-    "egg","huevo","pet","beast",
-    "animal","rarity","secret",
-    "eternal","divine","weight",
-    "income","reward","spawn",
-    "hatch","monster","creature"
-}
-
-local function relevant(value)
-    local s = string.lower(tostring(value))
-    for _,word in ipairs(keywords) do
-        if string.find(s,word,1,true) then
-            return true
-        end
-    end
-    return false
-end
-
-local function redraw()
-    local report = table.concat(lines,"\n")
-    output.Text = report
-    local height = math.max(1000,#lines*38)
-    output.Size = UDim2.new(1,-12,0,height)
-    scroll.CanvasSize = UDim2.new(0,0,0,height+30)
-end
 
 local function add(s)
     table.insert(lines,tostring(s))
-    redraw()
+end
+
+local function redraw()
+    output.Text = table.concat(lines,"\n")
+    local h = math.max(1000,#lines*42)
+    output.Size = UDim2.new(1,-12,0,h)
+    scroll.CanvasSize = UDim2.new(0,0,0,h+30)
 end
 
 local function stop()
-    running = false
-    generation = generation + 1
-
+    runId = runId + 1
     for _,c in ipairs(connections) do
         pcall(function()
             c:Disconnect()
         end)
     end
-
     connections = {}
 end
 
-local function attributes(obj)
-    local data = {}
-    local ok,attrs = pcall(function()
-        return obj:GetAttributes()
-    end)
+local function describe(obj,indent)
+    indent = indent or ""
+    add(indent..obj.Name.." ["..obj.ClassName.."]")
 
-    if ok then
-        for key,value in pairs(attrs) do
-            table.insert(
-                data,
-                tostring(key).."="..tostring(value)
-            )
-        end
+    local attrs = obj:GetAttributes()
+    local keys = {}
+
+    for k in pairs(attrs) do
+        table.insert(keys,k)
     end
 
-    table.sort(data)
-    return data
-end
+    table.sort(keys)
 
-local function describe(obj)
-    local result = obj:GetFullName()
-        .." ["..obj.ClassName.."]"
-
-    local attrs = attributes(obj)
-
-    if #attrs > 0 then
-        result = result
-            .."\n  ATTR: "
-            ..table.concat(attrs,", ")
+    for _,k in ipairs(keys) do
+        add(indent.."  ATTR "
+            ..k.." = "..tostring(attrs[k]))
     end
 
     if obj:IsA("ValueBase") then
         local ok,value = pcall(function()
             return tostring(obj.Value)
         end)
-
         if ok then
-            result = result.."\n  VALUE: "..value
+            add(indent.."  VALUE = "..value)
         end
     end
 
-    return result
+    if obj:IsA("BasePart") then
+        local p = obj.Position
+        add(indent.."  POS = "
+            ..math.floor(p.X)..","
+            ..math.floor(p.Y)..","
+            ..math.floor(p.Z))
+    elseif obj:IsA("Model") then
+        local ok,pivot = pcall(function()
+            return obj:GetPivot().Position
+        end)
+        if ok then
+            add(indent.."  PIVOT = "
+                ..math.floor(pivot.X)..","
+                ..math.floor(pivot.Y)..","
+                ..math.floor(pivot.Z))
+        end
+    end
+end
+
+local function inspectEgg(obj)
+    add("")
+    add("=== HUEVO / MODELO ===")
+    describe(obj)
+
+    local descendants = obj:GetDescendants()
+    add("Descendientes: "..#descendants)
+
+    local shown = 0
+    for _,child in ipairs(descendants) do
+        if shown >= 45 then break end
+
+        if child:IsA("Model")
+            or child:IsA("ValueBase")
+            or child:IsA("Folder")
+            or child:IsA("BasePart")
+            or next(child:GetAttributes()) ~= nil then
+
+            shown = shown + 1
+            describe(child,"  ")
+        end
+    end
+
+    add("Detalles mostrados: "..shown)
 end
 
 local function start()
     stop()
-    running = true
-    local thisRun = generation
-    lines = {}
+    local thisRun = runId
+    lines = {"EGG FINDER V19",""}
     eventCount = 0
 
-    add("EGG FINDER V18")
-    add("FASE 1: REPLICATED STORAGE")
-    add("")
-
-    local found = 0
-    local inspected = 0
-
-    for _,obj in ipairs(RS:GetDescendants()) do
-        inspected = inspected + 1
-
-        if relevant(obj.Name) then
-            found = found + 1
-
-            if found <= 100 then
-                add(describe(obj))
-                add("")
-            end
-        end
-    end
-
-    add("Objetos revisados: "..inspected)
-    add("Coincidencias: "..found)
-    add("")
-    add("FASE 2: MONITOREO (90 SEGUNDOS)")
-    add("Espera a que aparezcan huevos.")
-    add("")
-
-    local function logEvent(kind,obj)
-        if not running or thisRun ~= generation then
-            return
-        end
-
-        if eventCount >= maxEvents then
-            return
-        end
-
-        eventCount = eventCount + 1
-
-        add("["..eventCount.."] "..kind)
-        add(describe(obj))
-        add("")
-    end
-
-    local roots = {workspace,RS}
-
-    for _,root in ipairs(roots) do
-        local c = root.DescendantAdded:Connect(
-            function(obj)
-                if relevant(obj.Name) then
-                    logEvent("OBJETO NUEVO",obj)
-                end
-            end
+    local ok,err = pcall(function()
+        local root = workspace:FindFirstChild(
+            "PlacedEggRenders"
         )
 
-        table.insert(connections,c)
-    end
+        add("FASE 1: PLACED EGG RENDERS")
 
-    -- Vigilar atributos de objetos relacionados
-    -- que ya existen al iniciar la prueba.
-    local watched = 0
+        if not root then
+            add("Carpeta no encontrada.")
+        else
+            local eggs = root:GetChildren()
+            add("Objetos directos: "..#eggs)
 
-    for _,root in ipairs(roots) do
-        for _,obj in ipairs(root:GetDescendants()) do
-            if relevant(obj.Name) and watched < 150 then
-                watched = watched + 1
+            for i = 1,math.min(#eggs,8) do
+                inspectEgg(eggs[i])
+            end
 
-                local c = obj.AttributeChanged:Connect(
-                    function(attr)
-                        if running then
-                            logEvent(
-                                "ATRIBUTO CAMBIO: "..attr,
-                                obj
-                            )
-                        end
-                    end
-                )
+            local c = root.ChildAdded:Connect(function(obj)
+                if thisRun ~= runId then return end
+                if eventCount >= 15 then return end
 
-                table.insert(connections,c)
+                eventCount = eventCount + 1
+                add("")
+                add("NUEVO OBJETO #"..eventCount)
+                inspectEgg(obj)
+                redraw()
+            end)
+
+            table.insert(connections,c)
+        end
+
+        add("")
+        add("FASE 2: MODULOS IMPORTANTES")
+
+        local paths = {
+            {"Client","EggState"},
+            {"Client","Notifications","RareSpawnText"},
+            {"Data","MonsterEgg"},
+            {"Data","Rarity"},
+            {"Data","Rarity","Configs","Secret"},
+            {"Data","Rarity","Configs","Eternal"},
+            {"Data","Rarity","Configs","Divine"}
+        }
+
+        for _,path in ipairs(paths) do
+            local obj = RS
+            for _,name in ipairs(path) do
+                obj = obj and obj:FindFirstChild(name)
+            end
+
+            if obj then
+                add(obj:GetFullName())
+                add("Clase: "..obj.ClassName)
+                local attrs = obj:GetAttributes()
+                for k,v in pairs(attrs) do
+                    add("  "..tostring(k)
+                        .." = "..tostring(v))
+                end
+            else
+                add("NO ENCONTRADO: "
+                    ..table.concat(path,"/"))
             end
         end
+
+        add("")
+        add("Monitoreando nuevos objetos 90s...")
+    end)
+
+    if not ok then
+        add("ERROR: "..tostring(err))
     end
 
-    add("Objetos vigilados: "..watched)
+    redraw()
 
     task.delay(90,function()
-        if running and thisRun == generation then
-            add("")
-            add("MONITOREO FINALIZADO")
-            add("Eventos detectados: "..eventCount)
-            stop()
-        end
+        if thisRun ~= runId then return end
+        add("")
+        add("MONITOREO FINALIZADO")
+        add("Nuevos objetos: "..eventCount)
+        redraw()
+        stop()
     end)
 end
 
@@ -281,7 +273,6 @@ copy.MouseButton1Click:Connect(function()
         local ok = pcall(function()
             fn(table.concat(lines,"\n"))
         end)
-
         copy.Text = ok and "COPIADO!" or "ERROR"
     else
         copy.Text = "NO DISPONIBLE"
@@ -299,5 +290,3 @@ close.MouseButton1Click:Connect(function()
 end)
 
 task.spawn(start)
-
-
