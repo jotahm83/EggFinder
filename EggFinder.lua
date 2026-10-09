@@ -1,11 +1,9 @@
 
---[[
-    EGG FINDER V23
-    MONITOR DE REINICIO GLOBAL
-    Duracion: 6 minutos
-    Intervalo: 1 segundo
-    Solo lectura
-]]
+-- EGG FINDER V23.1
+-- MONITOR GLOBAL DE HUEVOS
+-- COPIAR TODO ILIMITADO
+-- DURACION: 6 MINUTOS
+-- SOLO LECTURA
 
 local Players = game:GetService("Players")
 local CollectionService = game:GetService("CollectionService")
@@ -13,15 +11,12 @@ local CollectionService = game:GetService("CollectionService")
 local player = Players.LocalPlayer
 local pg = player:WaitForChild("PlayerGui")
 
-local VERSION = "V23"
 local DURATION = 360
 local INTERVAL = 1
-local POSITION_TOLERANCE = 5
+local MAX_DISTANCE = 5
 
-local previous = pg:FindFirstChild("EggFinder")
-if previous then
-    previous:Destroy()
-end
+local old = pg:FindFirstChild("EggFinder")
+if old then old:Destroy() end
 
 local gui = Instance.new("ScreenGui")
 gui.Name = "EggFinder"
@@ -43,7 +38,7 @@ title.BackgroundColor3 = Color3.fromRGB(28, 39, 53)
 title.TextColor3 = Color3.fromRGB(50, 255, 160)
 title.Font = Enum.Font.GothamBold
 title.TextSize = 14
-title.Text = "EGG FINDER V23 | MONITOR GLOBAL"
+title.Text = "EGG FINDER V23.1 | MONITOR GLOBAL"
 title.Parent = frame
 
 local close = Instance.new("TextButton")
@@ -51,8 +46,8 @@ close.Size = UDim2.new(0, 40, 0, 35)
 close.Position = UDim2.new(1, -40, 0, 0)
 close.BackgroundColor3 = Color3.fromRGB(170, 45, 45)
 close.TextColor3 = Color3.new(1, 1, 1)
-close.Text = "X"
 close.Font = Enum.Font.GothamBold
+close.Text = "X"
 close.Parent = frame
 
 local status = Instance.new("TextLabel")
@@ -66,7 +61,7 @@ status.TextXAlignment = Enum.TextXAlignment.Left
 status.Text = "Preparando..."
 status.Parent = frame
 
-local function button(text, x, color)
+local function createButton(text, x, color)
     local b = Instance.new("TextButton")
     b.Size = UDim2.new(0.49, -4, 0, 34)
     b.Position = UDim2.new(x, 4, 0, 68)
@@ -79,13 +74,13 @@ local function button(text, x, color)
     return b
 end
 
-local copy = button(
+local copy = createButton(
     "COPIAR TODO",
     0,
     Color3.fromRGB(30, 120, 70)
 )
 
-local restart = button(
+local restart = createButton(
     "REINICIAR ANALISIS",
     0.5,
     Color3.fromRGB(40, 95, 160)
@@ -97,7 +92,6 @@ scroll.Position = UDim2.new(0, 6, 0, 107)
 scroll.BackgroundTransparency = 1
 scroll.BorderSizePixel = 0
 scroll.ScrollBarThickness = 6
-scroll.CanvasSize = UDim2.new(0, 1500, 0, 200)
 scroll.Parent = frame
 
 local output = Instance.new("TextLabel")
@@ -113,44 +107,47 @@ output.Parent = scroll
 
 local lines = {}
 local session = 0
-local running = false
 local startTime = 0
 local eventCount = 0
-local cycleCandidates = 0
-
-local function fmtPos(p)
-    if not p then return "N/A" end
-    return string.format(
-        "%.1f,%.1f,%.1f",
-        p.X, p.Y, p.Z
-    )
-end
+local copyCount = 0
+local nests = {}
 
 local function elapsed()
     if startTime == 0 then return 0 end
     return math.floor(os.clock() - startTime)
 end
 
-local function stamp()
-    return string.format(
+local function log(message)
+    local stamp = string.format(
         "[%s | +%03ds]",
         os.date("%H:%M:%S"),
         elapsed()
     )
-end
 
-local function log(s)
-    table.insert(lines, stamp() .. " " .. tostring(s))
+    table.insert(
+        lines,
+        stamp .. " " .. tostring(message)
+    )
 end
 
 local function render()
     output.Text = table.concat(lines, "\n")
-    local h = math.max(200, #lines * 17 + 30)
-    output.Size = UDim2.new(0, 1500, 0, h)
-    scroll.CanvasSize = UDim2.new(0, 1500, 0, h)
+
+    local height = math.max(
+        200,
+        #lines * 17 + 30
+    )
+
+    output.Size = UDim2.new(
+        0, 1500, 0, height
+    )
+
+    scroll.CanvasSize = UDim2.new(
+        0, 1500, 0, height
+    )
 end
 
-local function getPosition(obj)
+local function positionOf(obj)
     if obj:IsA("BasePart") then
         return obj.Position
     end
@@ -159,37 +156,43 @@ local function getPosition(obj)
         local ok, cf = pcall(function()
             return obj:GetPivot()
         end)
-        if ok then return cf.Position end
+
+        if ok then
+            return cf.Position
+        end
     end
 
     return nil
 end
 
-local function getAttributes(obj)
-    local result = {}
-    local attrs = obj:GetAttributes()
+local function posText(p)
+    if not p then return "N/A" end
 
-    for k, v in pairs(attrs) do
-        table.insert(result, k .. "=" .. tostring(v))
+    return string.format(
+        "%.1f,%.1f,%.1f",
+        p.X, p.Y, p.Z
+    )
+end
+
+local function metadata(obj)
+    local result = {}
+
+    for k, v in pairs(obj:GetAttributes()) do
+        table.insert(
+            result,
+            k .. "=" .. tostring(v)
+        )
+    end
+
+    local tags = CollectionService:GetTags(obj)
+
+    for _, tag in ipairs(tags) do
+        table.insert(result, "TAG=" .. tag)
     end
 
     table.sort(result)
     return table.concat(result, ";")
 end
-
-local function getTags(obj)
-    local ok, tags = pcall(function()
-        return CollectionService:GetTags(obj)
-    end)
-
-    if not ok then return "" end
-
-    table.sort(tags)
-    return table.concat(tags, ",")
-end
-
--- Localiza los 65 nidos por sus posiciones.
-local nests = {}
 
 local function scanNests()
     nests = {}
@@ -199,34 +202,30 @@ local function scanNests()
     local guards = areas and areas:FindFirstChild("GuardAreas")
 
     if not guards then
-        log("AVISO: No se encontro GuardAreas")
+        log("ERROR: GuardAreas no encontrado")
         return
     end
 
     for _, area in ipairs(guards:GetChildren()) do
-        local count = 0
+        local index = 0
 
         for _, obj in ipairs(area:GetDescendants()) do
-            if obj.Name == "NestModel" and obj:IsA("Model") then
-                count = count + 1
+            if obj.Name == "NestModel"
+                and obj:IsA("Model") then
 
-                local pos = getPosition(obj)
+                index = index + 1
 
-                -- EggFitBounds suele representar mejor
-                -- el centro del huevo en el nido.
                 local fit = obj:FindFirstChild(
                     "EggFitBounds",
                     true
                 )
 
-                if fit then
-                    pos = getPosition(fit) or pos
-                end
+                local pos = fit and positionOf(fit)
+                    or positionOf(obj)
 
                 if pos then
                     table.insert(nests, {
-                        zone = area.Name,
-                        index = count,
+                        name = area.Name .. ":Nido_" .. index,
                         position = pos
                     })
                 end
@@ -237,35 +236,31 @@ local function scanNests()
     log("NIDOS LOCALIZADOS: " .. #nests)
 end
 
-local function nearestNest(pos)
-    if not pos then
-        return "DESCONOCIDO", -1
-    end
+local function findNest(pos)
+    if not pos then return "DESCONOCIDO" end
 
     local best = nil
-    local bestDistance = math.huge
+    local distance = math.huge
 
     for _, nest in ipairs(nests) do
-        local d = (nest.position - pos).Magnitude
+        local d = (
+            nest.position - pos
+        ).Magnitude
 
-        if d < bestDistance then
-            bestDistance = d
+        if d < distance then
+            distance = d
             best = nest
         end
     end
 
-    if best and bestDistance <= POSITION_TOLERANCE then
-        return best.zone .. ":Nido_" .. best.index,
-            bestDistance
+    if best and distance <= MAX_DISTANCE then
+        return best.name
     end
 
-    return "SIN_NIDO", bestDistance
+    return "SIN_NIDO"
 end
 
--- Firma visual y de metadatos.
--- No representa necesariamente el animal
--- ni la rareza real del huevo.
-local function signature(model)
+local function getSignature(model)
     local meshes = {}
     local values = {}
     local parts = 0
@@ -285,20 +280,22 @@ local function signature(model)
                     obj.Size.Z
                 )
             )
+
         elseif obj:IsA("SpecialMesh") then
             table.insert(
                 meshes,
                 tostring(obj.MeshId)
             )
+
         elseif obj:IsA("ValueBase") then
-            local ok, v = pcall(function()
+            local ok, value = pcall(function()
                 return obj.Value
             end)
 
             if ok then
                 table.insert(
                     values,
-                    obj.Name .. "=" .. tostring(v)
+                    obj.Name .. "=" .. tostring(value)
                 )
             end
         end
@@ -313,57 +310,66 @@ local function signature(model)
 end
 
 local function snapshot()
-    local result = {}
+    local state = {}
+
     local folder = workspace:FindFirstChild(
         "AreaEggSlotsClient"
     )
 
     if not folder then
-        return result, false
+        return state, false
     end
 
     for _, obj in ipairs(folder:GetChildren()) do
         if obj:IsA("Model") then
-            local pos = getPosition(obj)
-            local zone, dist = nearestNest(pos)
-            local mesh, values, parts = signature(obj)
+            local pos = positionOf(obj)
+            local mesh, values, parts = getSignature(obj)
 
-            -- Usamos la referencia del objeto como clave.
-            -- Así distinguimos una instancia nueva
-            -- aunque tenga exactamente el mismo nombre.
-            result[obj] = {
+            state[obj] = {
                 name = obj.Name,
-                position = fmtPos(pos),
-                zone = zone,
-                distance = dist,
+                nest = findNest(pos),
+                position = posText(pos),
                 mesh = mesh,
                 values = values,
                 parts = parts,
-                attrs = getAttributes(obj),
-                tags = getTags(obj)
+                meta = metadata(obj)
             }
         end
     end
 
-    return result, true
+    return state, true
 end
 
-local function countEntries(t)
+local function count(state)
     local n = 0
-    for _ in pairs(t) do
+
+    for _ in pairs(state) do
         n = n + 1
     end
+
     return n
 end
 
+local function sortedData(state)
+    local items = {}
+
+    for _, data in pairs(state) do
+        table.insert(items, data)
+    end
+
+    table.sort(items, function(a, b)
+        return a.nest .. a.name
+            < b.nest .. b.name
+    end)
+
+    return items
+end
+
 local function describe(data)
-    return string.format(
-        "%s | %s | pos=%s | meshParts=%d",
-        data.zone,
-        data.name,
-        data.position,
-        data.parts
-    )
+    return data.nest
+        .. " | " .. data.name
+        .. " | pos=" .. data.position
+        .. " | meshParts=" .. data.parts
 end
 
 local function detail(prefix, data)
@@ -373,12 +379,8 @@ local function detail(prefix, data)
         log("    MESH: " .. data.mesh)
     end
 
-    if data.attrs ~= "" then
-        log("    ATTR: " .. data.attrs)
-    end
-
-    if data.tags ~= "" then
-        log("    TAGS: " .. data.tags)
+    if data.meta ~= "" then
+        log("    META: " .. data.meta)
     end
 
     if data.values ~= "" then
@@ -386,108 +388,84 @@ local function detail(prefix, data)
     end
 end
 
-local function zoneSummary(state)
-    local counts = {}
+local function summary(state)
+    local totals = {}
 
     for _, data in pairs(state) do
-        counts[data.zone] = (counts[data.zone] or 0) + 1
+        totals[data.nest] =
+            (totals[data.nest] or 0) + 1
     end
 
-    local keys = {}
+    local names = {}
 
-    for k in pairs(counts) do
-        table.insert(keys, k)
+    for name in pairs(totals) do
+        table.insert(names, name)
     end
 
-    table.sort(keys)
+    table.sort(names)
 
-    for _, k in ipairs(keys) do
-        log("  " .. k .. " = " .. counts[k])
+    for _, name in ipairs(names) do
+        log("  " .. name .. " = " .. totals[name])
     end
 end
 
-local function startMonitor()
+local function monitor()
     session = session + 1
-    local mySession = session
+    local thisSession = session
 
-    running = true
     startTime = os.clock()
     eventCount = 0
-    cycleCandidates = 0
     lines = {}
 
-    log("======================================")
-    log("EGG FINDER V23")
+    log("================================")
+    log("EGG FINDER V23.1")
     log("MONITOR GLOBAL DE HUEVOS")
-    log("======================================")
-    log("DURACION MAXIMA: 360 SEGUNDOS")
+    log("================================")
+    log("DURACION: 360 SEGUNDOS")
     log("INTERVALO: 1 SEGUNDO")
-    log("REINICIO DEL JUEGO: CADA 300 SEGUNDOS")
+    log("REINICIO DEL JUEGO: 300 SEGUNDOS")
     log("ZONAS: 13")
-    log("NIDOS ESPERADOS: 65")
     log("")
 
     scanNests()
 
-    local last, folderExists = snapshot()
+    local last, exists = snapshot()
 
     log("")
     log("=== ESTADO INICIAL ===")
-    log("CARPETA DISPONIBLE: " .. tostring(folderExists))
-    log("HUEVOS INICIALES: " .. countEntries(last))
+    log("CARPETA DISPONIBLE: " .. tostring(exists))
+    log("HUEVOS INICIALES: " .. count(last))
 
-    zoneSummary(last)
+    summary(last)
 
     log("")
     log("=== IDENTIFICADORES INICIALES ===")
 
-    local sorted = {}
-
-    for _, data in pairs(last) do
-        table.insert(sorted, data)
-    end
-
-    table.sort(sorted, function(a, b)
-        return a.zone .. a.name < b.zone .. b.name
-    end)
-
-    for _, data in ipairs(sorted) do
+    for _, data in ipairs(sortedData(last)) do
         detail("INICIAL", data)
     end
 
     log("")
     log("=== MONITOREO EN TIEMPO REAL ===")
+
     render()
 
     local lastHeartbeat = -1
-    local previousFolderExists = folderExists
 
-    while mySession == session
+    while thisSession == session
         and gui.Parent
         and elapsed() < DURATION do
 
         task.wait(INTERVAL)
 
-        if mySession ~= session then
-            break
+        if thisSession ~= session then
+            return
         end
 
-        local current, exists = snapshot()
+        local current, available = snapshot()
 
-        if exists ~= previousFolderExists then
-            log("CARPETA CAMBIO: " .. tostring(exists))
-            previousFolderExists = exists
-        end
-
-        -- Si la carpeta desaparece temporalmente,
-        -- evitamos marcar falsamente los 65 huevos
-        -- como recogidos.
-        if not exists then
-            status.Text = string.format(
-                "Tiempo: %ds / 360s | Carpeta no disponible",
-                elapsed()
-            )
-            render()
+        if not available then
+            status.Text = "Carpeta no disponible"
             continue
         end
 
@@ -502,21 +480,20 @@ local function startMonitor()
         end
 
         for obj, data in pairs(current) do
-            local old = last[obj]
+            local previous = last[obj]
 
-            if not old then
+            if not previous then
                 table.insert(added, data)
-            elseif
-                data.name ~= old.name
-                or data.position ~= old.position
-                or data.mesh ~= old.mesh
-                or data.values ~= old.values
-                or data.attrs ~= old.attrs
-                or data.tags ~= old.tags
-            then
+
+            elseif data.name ~= previous.name
+                or data.position ~= previous.position
+                or data.mesh ~= previous.mesh
+                or data.values ~= previous.values
+                or data.meta ~= previous.meta then
+
                 table.insert(modified, {
-                    old = old,
-                    new = data
+                    before = previous,
+                    after = data
                 })
             end
         end
@@ -528,29 +505,29 @@ local function startMonitor()
             eventCount = eventCount + 1
 
             log("")
-            log("======================================")
+            log("================================")
             log("EVENTO #" .. eventCount)
-            log("======================================")
-
-            log("ANTES: " .. countEntries(last))
-            log("AHORA: " .. countEntries(current))
+            log("================================")
+            log("ANTES: " .. count(last))
+            log("AHORA: " .. count(current))
             log("DESAPARECIDOS: " .. #removed)
             log("NUEVOS: " .. #added)
             log("MODIFICADOS: " .. #modified)
 
-            if #removed >= 15 and #added >= 15 then
-                cycleCandidates = cycleCandidates + 1
+            if #removed >= 15
+                and #added >= 15 then
 
                 log(">>> POSIBLE REINICIO GLOBAL <<<")
-                log("CANDIDATO #" .. cycleCandidates)
             end
 
             table.sort(removed, function(a, b)
-                return a.zone .. a.name < b.zone .. b.name
+                return a.nest .. a.name
+                    < b.nest .. b.name
             end)
 
             table.sort(added, function(a, b)
-                return a.zone .. a.name < b.zone .. b.name
+                return a.nest .. a.name
+                    < b.nest .. b.name
             end)
 
             for _, data in ipairs(removed) do
@@ -562,29 +539,29 @@ local function startMonitor()
             end
 
             for _, change in ipairs(modified) do
-                log("MODIFICADO: " .. change.new.zone)
-                log("  ANTES: " .. describe(change.old))
-                log("  AHORA: " .. describe(change.new))
+                log("MODIFICADO: " .. change.after.nest)
+                log("  ANTES: " .. describe(change.before))
+                log("  AHORA: " .. describe(change.after))
 
-                if change.old.mesh ~= change.new.mesh then
-                    log("  MESH ANTES: " .. change.old.mesh)
-                    log("  MESH AHORA: " .. change.new.mesh)
+                if change.before.mesh ~= change.after.mesh then
+                    log("  MESH ANTES: " .. change.before.mesh)
+                    log("  MESH AHORA: " .. change.after.mesh)
                 end
 
-                if change.old.attrs ~= change.new.attrs then
-                    log("  ATTR ANTES: " .. change.old.attrs)
-                    log("  ATTR AHORA: " .. change.new.attrs)
+                if change.before.meta ~= change.after.meta then
+                    log("  META ANTES: " .. change.before.meta)
+                    log("  META AHORA: " .. change.after.meta)
                 end
 
-                if change.old.values ~= change.new.values then
-                    log("  VALUE ANTES: " .. change.old.values)
-                    log("  VALUE AHORA: " .. change.new.values)
+                if change.before.values ~= change.after.values then
+                    log("  VALUES ANTES: " .. change.before.values)
+                    log("  VALUES AHORA: " .. change.after.values)
                 end
             end
 
             log("")
-            log("=== CANTIDAD ACTUAL POR NIDO ===")
-            zoneSummary(current)
+            log("=== ESTADO ACTUAL ===")
+            summary(current)
 
             render()
         end
@@ -593,12 +570,14 @@ local function startMonitor()
 
         local sec = elapsed()
 
-        if sec % 15 == 0 and sec ~= lastHeartbeat then
+        if sec % 15 == 0
+            and sec ~= lastHeartbeat then
+
             lastHeartbeat = sec
 
             log(
                 "HEARTBEAT | huevos="
-                .. countEntries(current)
+                .. count(current)
                 .. " | eventos="
                 .. eventCount
             )
@@ -609,50 +588,71 @@ local function startMonitor()
         status.Text = string.format(
             "Tiempo: %ds / 360s | Huevos: %d | Eventos: %d",
             sec,
-            countEntries(current),
+            count(current),
             eventCount
         )
     end
 
-    if mySession ~= session then
+    if thisSession ~= session then
         return
     end
 
-    running = false
-
     log("")
-    log("======================================")
-    log("FIN DEL MONITOREO V23")
-    log("======================================")
+    log("================================")
+    log("FIN DEL MONITOREO V23.1")
+    log("================================")
     log("SEGUNDOS: " .. elapsed())
     log("EVENTOS: " .. eventCount)
-    log("POSIBLES REINICIOS: " .. cycleCandidates)
-    log("NOTA: Un reinicio puede ocurrir en")
-    log("varios eventos separados.")
-    log("Puedes copiar el informe.")
+    log("Puedes copiar el informe completo.")
 
     status.Text = "MONITOREO FINALIZADO"
     render()
 end
 
+-- =========================================
+-- COPIAR TODO: SIN LIMITE DE PULSACIONES
+-- =========================================
+
 copy.MouseButton1Click:Connect(function()
     local fn = setclipboard or toclipboard
 
-    if fn then
-        local ok = pcall(function()
-            fn(table.concat(lines, "\n"))
-        end)
+    -- Siempre mantiene disponible el boton
+    copy.Text = "COPIAR TODO"
 
-        copy.Text = ok and "COPIADO!" or "ERROR AL COPIAR"
-    else
-        copy.Text = "CLIPBOARD NO DISPONIBLE"
+    if not fn then
+        status.Text = "Portapapeles no disponible"
+        return
     end
+
+    -- Se reconstruye TODO el informe
+    -- en cada pulsacion.
+    local report = table.concat(lines, "\n")
+
+    local ok, err = pcall(function()
+        fn(report)
+    end)
+
+    if ok then
+        copyCount = copyCount + 1
+
+        status.Text = string.format(
+            "Copia #%d solicitada | %d caracteres | %d lineas",
+            copyCount,
+            #report,
+            #lines
+        )
+    else
+        status.Text = "ERROR: " .. tostring(err)
+    end
+
+    -- Nunca cambia permanentemente a COPIADO
+    copy.Text = "COPIAR TODO"
 end)
 
 restart.MouseButton1Click:Connect(function()
-    copy.Text = "COPIAR TODO"
+    copyCount = 0
     session = session + 1
-    task.spawn(startMonitor)
+    task.spawn(monitor)
 end)
 
 close.MouseButton1Click:Connect(function()
@@ -660,4 +660,4 @@ close.MouseButton1Click:Connect(function()
     gui:Destroy()
 end)
 
-task.spawn(startMonitor)
+task.spawn(monitor)
