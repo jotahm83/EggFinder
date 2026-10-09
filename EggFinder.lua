@@ -1,6 +1,6 @@
 
--- EGG FINDER V12
--- DIAGNOSTICO DE OBJETOS
+-- EGG FINDER V13
+-- VENTANA COMPACTA + EXPLORADOR DE PLOTS
 
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
@@ -14,63 +14,83 @@ gui.Name = "EggFinder"
 gui.ResetOnSpawn = false
 gui.Parent = pg
 
-local frame = Instance.new("ScrollingFrame")
-frame.Size = UDim2.new(0.85, 0, 0.75, 0)
-frame.Position = UDim2.new(0.075, 0, 0.12, 0)
-frame.BackgroundColor3 = Color3.fromRGB(15, 15, 25)
-frame.ScrollBarThickness = 8
-frame.CanvasSize = UDim2.new(0, 0, 0, 2500)
-frame.Parent = gui
+local box = Instance.new("Frame")
+box.Size = UDim2.new(0.48, 0, 0.68, 0)
+box.Position = UDim2.new(0.49, 0, 0.16, 0)
+box.BackgroundColor3 = Color3.fromRGB(15, 15, 25)
+box.Active = true
+box.Draggable = true
+box.Parent = gui
 
-local label = Instance.new("TextLabel")
-label.Size = UDim2.new(1, -20, 0, 2500)
-label.BackgroundTransparency = 1
-label.TextColor3 = Color3.fromRGB(0, 255, 120)
-label.Font = Enum.Font.Code
-label.TextSize = 16
-label.TextXAlignment = Enum.TextXAlignment.Left
-label.TextYAlignment = Enum.TextYAlignment.Top
-label.Text = "EGG FINDER V12\nBuscando..."
-label.Parent = frame
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -35, 0, 35)
+title.BackgroundColor3 = Color3.fromRGB(35, 35, 55)
+title.TextColor3 = Color3.fromRGB(0, 255, 120)
+title.Text = "EGG FINDER V13"
+title.TextSize = 16
+title.Parent = box
 
-local paths = {
-    {"Stands", "Models"},
-    {"Stands", "Prompts"},
-    {"Stands", "Pads"},
-    {"World", "Areas"},
-    {"World", "Machines"},
-    {"Plots"},
-    {"Eggs"}
-}
+local close = Instance.new("TextButton")
+close.Size = UDim2.new(0, 35, 0, 35)
+close.Position = UDim2.new(1, -35, 0, 0)
+close.BackgroundColor3 = Color3.fromRGB(180, 45, 45)
+close.TextColor3 = Color3.new(1, 1, 1)
+close.Text = "X"
+close.TextSize = 20
+close.Parent = box
 
-local lines = {"EGG FINDER V12", ""}
+close.MouseButton1Click:Connect(function()
+    gui:Destroy()
+end)
+
+local scroll = Instance.new("ScrollingFrame")
+scroll.Size = UDim2.new(1, -10, 1, -45)
+scroll.Position = UDim2.new(0, 5, 0, 40)
+scroll.BackgroundTransparency = 1
+scroll.ScrollBarThickness = 5
+scroll.CanvasSize = UDim2.new(0, 0, 0, 2500)
+scroll.Parent = box
+
+local output = Instance.new("TextLabel")
+output.Size = UDim2.new(1, -10, 0, 2500)
+output.BackgroundTransparency = 1
+output.TextColor3 = Color3.fromRGB(0, 255, 120)
+output.TextSize = 12
+output.Font = Enum.Font.Code
+output.TextXAlignment = Enum.TextXAlignment.Left
+output.TextYAlignment = Enum.TextYAlignment.Top
+output.TextWrapped = false
+output.Text = "Analizando bases..."
+output.Parent = scroll
+
+local lines = {"EGG FINDER V13", ""}
 
 local function add(s)
-    table.insert(lines, s)
+    table.insert(lines, tostring(s))
 end
 
 local ok, err = pcall(function()
-    for _, path in ipairs(paths) do
-        local obj = workspace
-        local name = ""
+    local plots = workspace:FindFirstChild("Plots")
 
-        for _, part in ipairs(path) do
-            name = name .. "/" .. part
-            obj = obj and obj:FindFirstChild(part)
-        end
+    if not plots then
+        add("No existe Workspace.Plots")
+        return
+    end
 
-        add("=== " .. name .. " ===")
+    local bases = plots:GetChildren()
+    add("Bases encontradas: " .. #bases)
+    add("")
 
-        if obj then
-            local children = obj:GetChildren()
-            add("Total: " .. #children)
+    for _, base in ipairs(bases) do
+        add("=== BASE " .. base.Name .. " ===")
 
-            for i = 1, math.min(#children, 15) do
-                local child = children[i]
-                add(child.Name .. " [" .. child.ClassName .. "]")
-            end
-        else
-            add("No encontrada")
+        local children = base:GetChildren()
+        add("Objetos: " .. #children)
+
+        for i = 1, math.min(#children, 25) do
+            local obj = children[i]
+
+            add(obj.Name .. " [" .. obj.ClassName .. "]")
         end
 
         add("")
@@ -81,7 +101,9 @@ if not ok then
     add("ERROR: " .. tostring(err))
 end
 
-label.Text = table.concat(lines, "\n")
-local height = math.max(2500, #lines * 22)
-label.Size = UDim2.new(1, -20, 0, height)
-frame.CanvasSize = UDim2.new(0, 0, 0, height + 40)
+output.Text = table.concat(lines, "\n")
+
+local height = math.max(2500, #lines * 18)
+output.Size = UDim2.new(1, -10, 0, height)
+scroll.CanvasSize = UDim2.new(0, 0, 0, height + 20)
+
