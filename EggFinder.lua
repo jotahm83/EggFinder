@@ -1,240 +1,348 @@
 
--- ================================================
--- EGG FINDER V25
--- DETECTOR VISUAL DE HUEVOS ESPECIALES
--- SECRET / ETERNAL / DIVINE (PROVISIONAL)
--- ================================================
+--[[
+ EGG FINDER V26
+ Roblox: Roba un Huevo
+ Objetivo: encontrar huevos especiales GRANDES
+ Zonas: Cherry Blossom, Titan Temple,
+        Demons / Angels / Light Dark,
+        Enchanted Forest
+
+ IMPORTANTE:
+ - La rareza se estima por efectos visuales.
+ - No lee resultados secretos del servidor.
+ - El cambio automatico depende de Delta,
+   de Roblox y de los permisos del juego.
+]]
+
+if getgenv().EggFinderV26Stop then
+    pcall(getgenv().EggFinderV26Stop)
+end
 
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
+local RS = game:GetService("ReplicatedStorage")
+local TS = game:GetService("TeleportService")
+local HS = game:GetService("HttpService")
+local SG = game:GetService("StarterGui")
+local UIS = game:GetService("UserInputService")
+local SoundService = game:GetService("SoundService")
 
 local player = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
+local pg = player:WaitForChild("PlayerGui")
 
-local VERSION = "V25"
-local DURATION = 360
-local INTERVAL = 2
-local CHUNK_SIZE = 1800
-local NEST_DISTANCE = 12
+local CONFIG = {
+    Minimum = 10,
+    AutoHop = true,
+    ScanInterval = 2,
+    LoadWait = 12,
+    EmptyWait = 20,
+    HopDelay = 4,
+    MaxPages = 5,
+    EffectThreshold = 3
+}
 
-local env = (getgenv and getgenv()) or _G
-
-if type(env.EggFinderStop) == "function" then
-    pcall(env.EggFinderStop)
-end
+local LOADER_URL =
+    "https://raw.githubusercontent.com/jotahm83/EggFinder/main/EggFinder.lua"
 
 local running = true
-local generation = 0
-local markersEnabled = true
+local found = false
+local hopping = false
+local visited = {}
+local scannedServers = 0
+local startedAt = os.clock()
+local currentCandidates = {}
+local currentEggCount = 0
+local lastLog = ""
+local scanBusy = false
 
-local oldGui = playerGui:FindFirstChild("EggFinder")
-if oldGui then
-    oldGui:Destroy()
+local oldGui = pg:FindFirstChild("EggFinderV26")
+if oldGui then oldGui:Destroy() end
+
+local function new(class, properties, parent)
+    local obj = Instance.new(class)
+    for k, v in pairs(properties or {}) do
+        obj[k] = v
+    end
+    obj.Parent = parent
+    return obj
 end
 
-local oldMarkers = workspace:FindFirstChild(
-    "EggFinderV25Markers"
+local gui = new("ScreenGui", {
+    Name = "EggFinderV26",
+    ResetOnSpawn = false,
+    IgnoreGuiInset = true,
+    DisplayOrder = 999999
+}, pg)
+
+local panel = new("Frame", {
+    Name = "Panel",
+    Size = UDim2.fromOffset(330, 455),
+    Position = UDim2.new(0.5, -165, 0.5, -227),
+    BackgroundColor3 = Color3.fromRGB(18, 22, 33),
+    BorderSizePixel = 0,
+    Active = true
+}, gui)
+
+new("UICorner", {CornerRadius = UDim.new(0, 12)}, panel)
+
+new("UIStroke", {
+    Color = Color3.fromRGB(60, 110, 180),
+    Thickness = 1.5
+}, panel)
+
+local header = new("Frame", {
+    Size = UDim2.new(1, 0, 0, 43),
+    BackgroundColor3 = Color3.fromRGB(27, 40, 63),
+    BorderSizePixel = 0,
+    Active = true
+}, panel)
+
+new("UICorner", {
+    CornerRadius = UDim.new(0, 12)
+}, header)
+
+local title = new("TextLabel", {
+    Size = UDim2.new(1, -50, 1, 0),
+    Position = UDim2.fromOffset(12, 0),
+    BackgroundTransparency = 1,
+    Text = "EGG FINDER V26",
+    Font = Enum.Font.GothamBold,
+    TextSize = 17,
+    TextColor3 = Color3.fromRGB(115, 210, 255),
+    TextXAlignment = Enum.TextXAlignment.Left
+}, header)
+
+local function makeButton(text, x, y, w, h, parent, color)
+    local b = new("TextButton", {
+        Text = text,
+        Size = UDim2.fromOffset(w, h),
+        Position = UDim2.fromOffset(x, y),
+        BackgroundColor3 = color or Color3.fromRGB(43, 72, 110),
+        TextColor3 = Color3.new(1, 1, 1),
+        Font = Enum.Font.GothamBold,
+        TextSize = 12,
+        BorderSizePixel = 0,
+        AutoButtonColor = true
+    }, parent)
+    new("UICorner", {
+        CornerRadius = UDim.new(0, 7)
+    }, b)
+    return b
+end
+
+local close = makeButton(
+    "X", 295, 7, 28, 28, header,
+    Color3.fromRGB(155, 48, 55)
 )
 
-if oldMarkers then
-    oldMarkers:Destroy()
+local function makeLabel(text, x, y, w, h, size, color)
+    return new("TextLabel", {
+        Text = text,
+        Size = UDim2.fromOffset(w, h),
+        Position = UDim2.fromOffset(x, y),
+        BackgroundTransparency = 1,
+        TextColor3 = color or Color3.new(1, 1, 1),
+        Font = Enum.Font.Gotham,
+        TextSize = size or 13,
+        TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Center
+    }, panel)
 end
 
-local markerFolder = Instance.new("Folder")
-markerFolder.Name = "EggFinderV25Markers"
-markerFolder.Parent = workspace
+local status = makeLabel(
+    "Preparando detector...", 12, 51, 306, 35,
+    13, Color3.fromRGB(255, 220, 120)
+)
 
-local report = {}
-local summary = {}
-local started = 0
-local resetCount = 0
-local partIndex = 1
-local copyCount = 0
+makeLabel(
+    "ALTURA MINIMA (STUDS)",
+    12, 92, 250, 20, 12,
+    Color3.fromRGB(180, 195, 215)
+)
 
-local nests = {}
-local lastResults = {}
-local lastSignature = ""
-local lastEggCount = 0
+local presetValues = {6, 8, 10, 12, 15}
+local presetButtons = {}
 
-local function elapsed()
-    if started == 0 then
-        return 0
+local minimumBox = new("TextBox", {
+    Position = UDim2.fromOffset(12, 153),
+    Size = UDim2.fromOffset(306, 32),
+    Text = tostring(CONFIG.Minimum),
+    PlaceholderText = "Escribe un minimo personalizado",
+    BackgroundColor3 = Color3.fromRGB(34, 43, 60),
+    TextColor3 = Color3.new(1, 1, 1),
+    Font = Enum.Font.GothamBold,
+    TextSize = 15,
+    ClearTextOnFocus = false,
+    BorderSizePixel = 0
+}, panel)
+
+new("UICorner", {
+    CornerRadius = UDim.new(0, 7)
+}, minimumBox)
+
+local function updatePresetColors()
+    for i, b in ipairs(presetButtons) do
+        if CONFIG.Minimum == presetValues[i] then
+            b.BackgroundColor3 = Color3.fromRGB(32, 150, 104)
+        else
+            b.BackgroundColor3 = Color3.fromRGB(43, 72, 110)
+        end
     end
-
-    return math.floor(os.clock() - started)
 end
 
-local function log(message, important)
-    local line = string.format(
-        "[+%03ds] %s",
-        elapsed(),
-        tostring(message)
+for i, value in ipairs(presetValues) do
+    local b = makeButton(
+        tostring(value),
+        12 + (i - 1) * 62,
+        116, 58, 30, panel
     )
+    presetButtons[i] = b
+    b.MouseButton1Click:Connect(function()
+        CONFIG.Minimum = value
+        minimumBox.Text = tostring(value)
+        updatePresetColors()
+    end)
+end
 
-    table.insert(report, line)
+updatePresetColors()
 
-    if important then
-        table.insert(summary, line)
+minimumBox.FocusLost:Connect(function()
+    local n = tonumber(minimumBox.Text)
+    if n and n > 0 and n <= 1000 then
+        CONFIG.Minimum = n
+    else
+        minimumBox.Text = tostring(CONFIG.Minimum)
     end
-end
+    updatePresetColors()
+end)
 
-local function formatNumber(n)
-    return string.format("%.2f", n)
-end
-
-local function formatSize(size)
-    return formatNumber(size.X)
-        .. " x " .. formatNumber(size.Y)
-        .. " x " .. formatNumber(size.Z)
-end
-
--- ================================================
--- INTERFAZ
--- ================================================
-
-local gui = Instance.new("ScreenGui")
-gui.Name = "EggFinder"
-gui.ResetOnSpawn = false
-gui.DisplayOrder = 100
-gui.Parent = playerGui
-
-local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 540, 0, 490)
-frame.Position = UDim2.new(0.5, -270, 0.10, 0)
-frame.BackgroundColor3 = Color3.fromRGB(15, 20, 30)
-frame.BorderSizePixel = 0
-frame.Active = true
-frame.Draggable = true
-frame.Parent = gui
-
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -42, 0, 35)
-title.BackgroundColor3 = Color3.fromRGB(28, 43, 55)
-title.TextColor3 = Color3.fromRGB(65, 255, 170)
-title.Font = Enum.Font.GothamBold
-title.TextSize = 14
-title.Text = "EGG FINDER V25 | DETECTOR VISUAL"
-title.Parent = frame
-
-local close = Instance.new("TextButton")
-close.Size = UDim2.new(0, 42, 0, 35)
-close.Position = UDim2.new(1, -42, 0, 0)
-close.BackgroundColor3 = Color3.fromRGB(175, 45, 45)
-close.TextColor3 = Color3.new(1, 1, 1)
-close.Font = Enum.Font.GothamBold
-close.Text = "X"
-close.Parent = frame
-
-local status = Instance.new("TextLabel")
-status.Size = UDim2.new(1, -12, 0, 23)
-status.Position = UDim2.new(0, 6, 0, 38)
-status.BackgroundTransparency = 1
-status.TextColor3 = Color3.fromRGB(245, 215, 125)
-status.Font = Enum.Font.Code
-status.TextSize = 12
-status.TextXAlignment = Enum.TextXAlignment.Left
-status.Text = "Preparando..."
-status.Parent = frame
-
-local resultStatus = Instance.new("TextLabel")
-resultStatus.Size = UDim2.new(1, -12, 0, 23)
-resultStatus.Position = UDim2.new(0, 6, 0, 62)
-resultStatus.BackgroundTransparency = 1
-resultStatus.TextColor3 = Color3.fromRGB(105, 220, 255)
-resultStatus.Font = Enum.Font.Code
-resultStatus.TextSize = 12
-resultStatus.TextXAlignment = Enum.TextXAlignment.Left
-resultStatus.Text = "Analizando huevos..."
-resultStatus.Parent = frame
-
-local function makeButton(text, x, y, color)
-    local button = Instance.new("TextButton")
-    button.Size = UDim2.new(0.5, -6, 0, 32)
-    button.Position = UDim2.new(x, 4, 0, y)
-    button.BackgroundColor3 = color
-    button.TextColor3 = Color3.new(1, 1, 1)
-    button.Font = Enum.Font.GothamBold
-    button.TextSize = 11
-    button.Text = text
-    button.Parent = frame
-
-    return button
-end
-
-local copyAll = makeButton(
-    "COPIAR TODO", 0, 89,
-    Color3.fromRGB(30, 125, 75)
-)
-
-local copySummary = makeButton(
-    "COPIAR RESUMEN", 0.5, 89,
-    Color3.fromRGB(35, 135, 135)
-)
-
-local copyPart = makeButton(
-    "COPIAR PARTE 1", 0, 126,
-    Color3.fromRGB(35, 100, 175)
+local autoButton = makeButton(
+    "AUTO HOP: SI", 12, 195, 148, 33,
+    panel, Color3.fromRGB(31, 130, 95)
 )
 
 local scanButton = makeButton(
-    "ESCANEAR AHORA", 0.5, 126,
-    Color3.fromRGB(125, 75, 175)
+    "ESCANEAR", 170, 195, 148, 33, panel
 )
 
-local markerButton = makeButton(
-    "MARCADORES: ON", 0, 163,
-    Color3.fromRGB(125, 100, 45)
+local hopButton = makeButton(
+    "OTRO SERVIDOR", 12, 237, 148, 33, panel
+)
+
+local pauseButton = makeButton(
+    "PAUSAR", 170, 237, 148, 33, panel,
+    Color3.fromRGB(130, 95, 35)
+)
+
+local stats = makeLabel(
+    "Servidor: 1 | Huevos: 0 | Candidatos: 0",
+    12, 281, 306, 34, 12,
+    Color3.fromRGB(180, 215, 255)
+)
+
+local results = makeLabel(
+    "Esperando el primer escaneo...",
+    12, 317, 306, 72, 12,
+    Color3.fromRGB(235, 235, 235)
+)
+results.TextYAlignment = Enum.TextYAlignment.Top
+
+local copyButton = makeButton(
+    "COPIAR RESUMEN", 12, 399, 148, 34, panel
 )
 
 local restartButton = makeButton(
-    "REINICIAR", 0.5, 163,
-    Color3.fromRGB(155, 65, 55)
+    "REINICIAR", 170, 399, 148, 34, panel,
+    Color3.fromRGB(105, 65, 130)
 )
 
-local scroll = Instance.new("ScrollingFrame")
-scroll.Size = UDim2.new(1, -12, 1, -207)
-scroll.Position = UDim2.new(0, 6, 0, 201)
-scroll.BackgroundColor3 = Color3.fromRGB(9, 14, 22)
-scroll.BorderSizePixel = 0
-scroll.ScrollBarThickness = 6
-scroll.ScrollingDirection = Enum.ScrollingDirection.XY
-scroll.Parent = frame
+-- Arrastre compatible con mouse y pantalla tactil.
+do
+    local dragging = false
+    local dragStart
+    local startPosition
+    local activeInput
 
-local output = Instance.new("TextLabel")
-output.Size = UDim2.new(0, 1600, 0, 200)
-output.BackgroundTransparency = 1
-output.Font = Enum.Font.Code
-output.TextSize = 12
-output.TextColor3 = Color3.fromRGB(140, 255, 180)
-output.TextXAlignment = Enum.TextXAlignment.Left
-output.TextYAlignment = Enum.TextYAlignment.Top
-output.TextWrapped = false
-output.Parent = scroll
+    header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPosition = panel.Position
+            activeInput = input
+        end
+    end)
 
-local function render()
-    local visible = {}
-    local first = math.max(1, #report - 79)
+    UIS.InputChanged:Connect(function(input)
+        if not dragging then return end
 
-    for i = first, #report do
-        table.insert(visible, report[i])
-    end
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input == activeInput then
+            local delta = input.Position - dragStart
+            panel.Position = UDim2.new(
+                startPosition.X.Scale,
+                startPosition.X.Offset + delta.X,
+                startPosition.Y.Scale,
+                startPosition.Y.Offset + delta.Y
+            )
+        end
+    end)
 
-    output.Text = table.concat(visible, "\n")
-
-    local height = math.max(
-        200,
-        #visible * 17 + 20
-    )
-
-    output.Size = UDim2.new(0, 1600, 0, height)
-    scroll.CanvasSize = UDim2.new(0, 1600, 0, height)
+    UIS.InputEnded:Connect(function(input)
+        if input == activeInput
+        or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
 end
 
--- ================================================
--- LOCALIZACION DE NIDOS
--- ================================================
+local function setStatus(message, color)
+    status.Text = message
+    if color then status.TextColor3 = color end
+end
 
-local function getPosition(obj)
+local function log(message)
+    print("[EGG FINDER V26] " .. tostring(message))
+    lastLog = tostring(message)
+end
+
+local function normalize(s)
+    return tostring(s or ""):lower()
+        :gsub("[^%w]", "")
+end
+
+local zonePatterns = {
+    {name = "Cherry Blossom", aliases = {
+        "cherryblossom", "cherry"
+    }},
+    {name = "Titan Temple", aliases = {
+        "titantemple", "titan"
+    }},
+    {name = "Demons/Angels", aliases = {
+        "lightdark", "demons", "angels",
+        "demon", "angel"
+    }},
+    {name = "Enchanted Forest", aliases = {
+        "enchantedforest", "enchanted"
+    }}
+}
+
+local function matchZone(s)
+    local n = normalize(s)
+    if n == "" then return nil end
+
+    for _, zone in ipairs(zonePatterns) do
+        for _, alias in ipairs(zone.aliases) do
+            if n:find(alias, 1, true) then
+                return zone.name
+            end
+        end
+    end
+
+    return nil
+end
+
+local function objectPosition(obj)
     if obj:IsA("BasePart") then
         return obj.Position
     end
@@ -243,815 +351,856 @@ local function getPosition(obj)
         local ok, cf = pcall(function()
             return obj:GetPivot()
         end)
-
-        if ok then
-            return cf.Position
-        end
+        if ok then return cf.Position end
     end
 
     return nil
 end
 
-local function scanNests()
-    nests = {}
+local function zoneFromObject(obj)
+    local node = obj
 
-    local world = workspace:FindFirstChild("World")
-    local areas = world and world:FindFirstChild("Areas")
-    local guards = areas and areas:FindFirstChild(
-        "GuardAreas"
-    )
+    while node and node ~= workspace do
+        local z = matchZone(node.Name)
+        if z then return z end
 
-    if not guards then
-        log("ERROR: GuardAreas no encontrado", true)
-        return
-    end
-
-    for _, area in ipairs(guards:GetChildren()) do
-        local positions = {}
-
-        for _, obj in ipairs(area:GetDescendants()) do
-            if obj:IsA("Model")
-                and obj.Name == "NestModel" then
-
-                local fit = obj:FindFirstChild(
-                    "EggFitBounds",
-                    true
-                )
-
-                local pos = fit and getPosition(fit)
-                    or getPosition(obj)
-
-                if pos then
-                    table.insert(positions, pos)
-                end
+        for _, attr in ipairs({
+            "Area", "AreaName", "Zone",
+            "ZoneName", "Biome", "BiomeName"
+        }) do
+            local ok, value = pcall(function()
+                return node:GetAttribute(attr)
+            end)
+            if ok and value then
+                z = matchZone(value)
+                if z then return z end
             end
         end
 
-        table.sort(positions, function(a, b)
-            if math.abs(a.X - b.X) > 0.01 then
-                return a.X < b.X
-            end
+        node = node.Parent
+    end
 
-            return a.Z < b.Z
-        end)
+    return nil
+end
 
-        for i, pos in ipairs(positions) do
+local function getEggFolder()
+    return workspace:FindFirstChild("AreaEggSlotsClient")
+end
+
+local function getGuardAreas()
+    local world = workspace:FindFirstChild("World")
+    local areas = world and world:FindFirstChild("Areas")
+    return areas and areas:FindFirstChild("GuardAreas")
+end
+
+local function collectNests()
+    local folder = getGuardAreas()
+    local nests = {}
+
+    if not folder then return nests end
+
+    for _, obj in ipairs(folder:GetDescendants()) do
+        if obj.Name == "EggFitBounds"
+        and obj:IsA("BasePart") then
+            local zone = zoneFromObject(obj)
+
             table.insert(nests, {
-                name = area.Name .. ":Nido_" .. i,
-                position = pos
+                position = obj.Position,
+                zone = zone,
+                path = obj:GetFullName()
             })
         end
     end
 
-    log("NIDOS ENCONTRADOS: " .. #nests, true)
+    return nests
 end
 
-local function nearestNest(position)
-    if not position then
-        return "SIN_POSICION"
-    end
+local function findEggZone(egg, nests)
+    local direct = zoneFromObject(egg)
+    if direct then return direct, true end
 
-    local bestName = "SIN_NIDO"
-    local bestDistance = math.huge
+    local pos = objectPosition(egg)
+    if not pos then return nil, false end
+
+    local nearest
+    local distance = math.huge
 
     for _, nest in ipairs(nests) do
-        local distance = (
-            nest.position - position
-        ).Magnitude
-
-        if distance < bestDistance then
-            bestDistance = distance
-            bestName = nest.name
+        local d = (nest.position - pos).Magnitude
+        if d < distance then
+            distance = d
+            nearest = nest
         end
     end
 
-    if bestDistance <= NEST_DISTANCE then
-        return bestName
+    if nearest and distance <= 35 then
+        return nearest.zone, nearest.zone ~= nil
     end
 
-    return "SIN_NIDO"
+    return nil, false
 end
 
--- ================================================
--- ANALISIS DE COLOR
--- ================================================
-
-local function colorCategory(color)
-    local r = color.R
-    local g = color.G
-    local b = color.B
-
-    local maxValue = math.max(r, g, b)
-    local minValue = math.min(r, g, b)
-
-    -- Blanco o muy claro.
-    if minValue > 0.75 then
-        return "WHITE"
-    end
-
-    -- Rosado / magenta.
-    if r > 0.65
-        and b > 0.40
-        and g < r * 0.85 then
-
-        return "PINK"
-    end
-
-    -- Dorado / amarillo.
-    if r > 0.65
-        and g > 0.38
-        and b < g * 0.75 then
-
-        return "GOLD"
-    end
-
-    if maxValue > 0.75 then
-        return "BRIGHT"
-    end
-
-    return "OTHER"
-end
-
-local function analyzeColorSequence(sequence)
-    local found = {
-        PINK = false,
-        GOLD = false,
-        WHITE = false,
-        BRIGHT = false
-    }
-
-    for _, keypoint in ipairs(
-        sequence.Keypoints
-    ) do
-        local category = colorCategory(
-            keypoint.Value
-        )
-
-        if found[category] ~= nil then
-            found[category] = true
-        end
-    end
-
-    return found
-end
-
--- ================================================
--- ANALISIS VISUAL DEL HUEVO
--- ================================================
-
-local function analyzeEgg(egg)
-    local position = getPosition(egg)
-
-    local size = Vector3.new(0, 0, 0)
-
-    local ok, boxSize = pcall(function()
-        local _, dimensions =
-            egg:GetBoundingBox()
-
-        return dimensions
-    end)
-
-    if ok then
-        size = boxSize
-    end
-
-    local result = {
-        instance = egg,
-        name = egg.Name,
-        nest = nearestNest(position),
-        position = position,
-        size = size,
-
-        lights = 0,
-        particles = 0,
-        beams = 0,
-        trails = 0,
-        highlights = 0,
-
-        pink = 0,
-        gold = 0,
-        white = 0,
-        bright = 0,
-
-        brightness = 0,
-        particleRate = 0,
-
-        classification = "NORMAL",
-        score = 0
-    }
-
-    local function registerColor(category)
-        if category == "PINK" then
-            result.pink = result.pink + 1
-        elseif category == "GOLD" then
-            result.gold = result.gold + 1
-        elseif category == "WHITE" then
-            result.white = result.white + 1
-        elseif category == "BRIGHT" then
-            result.bright = result.bright + 1
-        end
-    end
-
-    local function registerSequence(sequence)
-        local categories =
-            analyzeColorSequence(sequence)
-
-        for category, present in pairs(categories) do
-            if present then
-                registerColor(category)
-            end
-        end
-    end
+-- Se mide la altura usando partes fisicas,
+-- no el tamaño de los emisores de particulas.
+local function measureEgg(egg)
+    local minY = math.huge
+    local maxY = -math.huge
+    local count = 0
 
     for _, obj in ipairs(egg:GetDescendants()) do
+        if obj:IsA("BasePart") then
+            if obj.Transparency < 0.98
+            and obj.Size.Magnitude > 0.05 then
+                local cf = obj.CFrame
+                local size = obj.Size
 
-        if obj:IsA("PointLight")
-            or obj:IsA("SpotLight")
-            or obj:IsA("SurfaceLight") then
+                local halfY =
+                    math.abs(cf.RightVector.Y) * size.X / 2
+                    + math.abs(cf.UpVector.Y) * size.Y / 2
+                    + math.abs(cf.LookVector.Y) * size.Z / 2
 
-            if obj.Enabled then
-                result.lights = result.lights + 1
-
-                result.brightness =
-                    result.brightness
-                    + obj.Brightness
-
-                registerColor(
-                    colorCategory(obj.Color)
-                )
+                minY = math.min(minY, cf.Position.Y - halfY)
+                maxY = math.max(maxY, cf.Position.Y + halfY)
+                count = count + 1
             end
+        end
+    end
 
-        elseif obj:IsA("ParticleEmitter") then
+    if count > 0 then
+        return maxY - minY
+    end
+
+    if egg:IsA("Model") then
+        local ok, _, size = pcall(function()
+            return egg:GetBoundingBox()
+        end)
+        if ok then return size.Y end
+    end
+
+    return 0
+end
+
+local function inspectEffects(egg)
+    local particles = 0
+    local highlights = 0
+    local beams = 0
+    local trails = 0
+    local lights = 0
+    local strongRate = 0
+    local pinkOutline = false
+
+    for _, obj in ipairs(egg:GetDescendants()) do
+        if obj:IsA("ParticleEmitter") then
             if obj.Enabled then
-                result.particles =
-                    result.particles + 1
-
-                result.particleRate =
-                    result.particleRate
-                    + obj.Rate
-
-                registerSequence(obj.Color)
-            end
-
-        elseif obj:IsA("Beam") then
-            if obj.Enabled then
-                result.beams = result.beams + 1
-                registerSequence(obj.Color)
-            end
-
-        elseif obj:IsA("Trail") then
-            if obj.Enabled then
-                result.trails = result.trails + 1
-                registerSequence(obj.Color)
+                particles = particles + 1
+                strongRate = strongRate + math.min(obj.Rate, 100)
             end
 
         elseif obj:IsA("Highlight") then
             if obj.Enabled then
-                result.highlights =
-                    result.highlights + 1
+                highlights = highlights + 1
 
-                registerColor(
-                    colorCategory(
-                        obj.OutlineColor
-                    )
-                )
+                local c = obj.OutlineColor
+                if c.R > 0.65
+                and c.B > 0.3
+                and c.G < 0.55
+                and obj.OutlineTransparency < 0.8 then
+                    pinkOutline = true
+                end
+            end
 
-                registerColor(
-                    colorCategory(
-                        obj.FillColor
-                    )
-                )
+        elseif obj:IsA("Beam") then
+            if obj.Enabled then
+                beams = beams + 1
+            end
+
+        elseif obj:IsA("Trail") then
+            if obj.Enabled then
+                trails = trails + 1
+            end
+
+        elseif obj:IsA("PointLight")
+        or obj:IsA("SpotLight")
+        or obj:IsA("SurfaceLight") then
+            if obj.Enabled then
+                lights = lights + 1
             end
         end
     end
 
-    local effects =
-        result.lights
-        + result.particles
-        + result.beams
-        + result.trails
-        + result.highlights
+    local score =
+        particles * 2
+        + highlights * 3
+        + beams * 3
+        + trails * 2
+        + lights * 2
+        + math.min(strongRate / 25, 8)
 
-    result.score =
-        result.lights * 3
-        + result.particles * 2
-        + result.beams * 3
-        + result.trails * 2
-        + result.highlights * 3
-        + math.min(result.brightness, 20)
-        + math.min(result.particleRate / 20, 10)
+    -- Filtro conservador contra huevos normales
+    -- que solo tienen una particula decorativa.
+    local special =
+        particles >= 3
+        or (highlights >= 1 and particles >= 2)
+        or (beams + trails >= 2 and particles >= 1)
+        or (lights >= 2 and particles >= 2)
 
-    if effects > 0 then
-        if result.gold > 0
-            and result.score >= 8 then
+    local rarity = "ESPECIAL (sin confirmar)"
 
-            result.classification =
-                "POSIBLE DIVINE"
-
-        elseif result.pink > 0 then
-            result.classification =
-                "POSIBLE ETERNAL"
-
-        else
-            result.classification =
-                "POSIBLE SECRET"
-        end
+    if special and pinkOutline then
+        rarity = "POSIBLE ETERNAL"
     end
 
-    return result
+    return {
+        special = special,
+        rarity = rarity,
+        score = score,
+        particles = particles,
+        highlights = highlights,
+        beams = beams,
+        trails = trails,
+        lights = lights,
+        pink = pinkOutline
+    }
 end
 
--- ================================================
--- MARCADORES VISUALES
--- ================================================
+local function playAlert()
+    pcall(function()
+        local sound = new("Sound", {
+            SoundId = "rbxasset://sounds/electronicpingshort.wav",
+            Volume = 1.5
+        }, SoundService)
 
-local function clearMarkers()
-    for _, obj in ipairs(
-        markerFolder:GetChildren()
-    ) do
-        obj:Destroy()
-    end
+        sound:Play()
+
+        task.delay(4, function()
+            if sound then sound:Destroy() end
+        end)
+    end)
 end
 
-local function markerColor(classification)
-    if classification == "POSIBLE DIVINE" then
-        return Color3.fromRGB(255, 205, 55)
-    end
+local alertGui
 
-    if classification == "POSIBLE ETERNAL" then
-        return Color3.fromRGB(255, 85, 205)
-    end
+local function showAlert(candidate)
+    if alertGui then alertGui:Destroy() end
 
-    return Color3.fromRGB(80, 255, 170)
-end
+    alertGui = new("Frame", {
+        Size = UDim2.new(0.9, 0, 0, 165),
+        Position = UDim2.new(0.05, 0, 0.08, 0),
+        BackgroundColor3 = Color3.fromRGB(20, 85, 52),
+        BorderSizePixel = 0,
+        ZIndex = 50
+    }, gui)
 
-local function createMarker(result)
-    if not markersEnabled then
-        return
-    end
+    new("UICorner", {
+        CornerRadius = UDim.new(0, 12)
+    }, alertGui)
 
-    if result.classification == "NORMAL" then
-        return
-    end
+    new("UIStroke", {
+        Color = Color3.fromRGB(75, 255, 145),
+        Thickness = 3
+    }, alertGui)
 
-    local egg = result.instance
+    local text = new("TextLabel", {
+        Size = UDim2.new(1, -20, 1, -45),
+        Position = UDim2.fromOffset(10, 8),
+        BackgroundTransparency = 1,
+        Text = string.format(
+            "¡HUEVO ENCONTRADO!\n%s\nAltura: %.2f studs | Minimo: %.2f\n%s\nBUSQUEDA DETENIDA",
+            candidate.zone,
+            candidate.height,
+            CONFIG.Minimum,
+            candidate.rarity
+        ),
+        TextColor3 = Color3.new(1, 1, 1),
+        Font = Enum.Font.GothamBold,
+        TextSize = 16,
+        TextWrapped = true,
+        ZIndex = 51
+    }, alertGui)
 
-    if not egg or not egg.Parent then
-        return
-    end
+    local dismiss = new("TextButton", {
+        Size = UDim2.new(1, -20, 0, 30),
+        Position = UDim2.new(0, 10, 1, -36),
+        BackgroundColor3 = Color3.fromRGB(40, 130, 80),
+        Text = "CERRAR AVISO (SIN REANUDAR)",
+        TextColor3 = Color3.new(1, 1, 1),
+        Font = Enum.Font.GothamBold,
+        TextSize = 12,
+        ZIndex = 51
+    }, alertGui)
 
-    local adornment = Instance.new("Highlight")
-    adornment.Name = "EggFinderHighlight"
-    adornment.Adornee = egg
-    adornment.FillTransparency = 0.85
-    adornment.OutlineTransparency = 0
-    adornment.OutlineColor = markerColor(
-        result.classification
-    )
-    adornment.FillColor = markerColor(
-        result.classification
-    )
-    adornment.DepthMode =
-        Enum.HighlightDepthMode.AlwaysOnTop
+    new("UICorner", {
+        CornerRadius = UDim.new(0, 7)
+    }, dismiss)
 
-    adornment.Parent = markerFolder
-
-    local adornee = egg.PrimaryPart
-
-    if not adornee then
-        adornee = egg:FindFirstChildWhichIsA(
-            "BasePart",
-            true
-        )
-    end
-
-    if not adornee then
-        return
-    end
-
-    local billboard = Instance.new("BillboardGui")
-    billboard.Name = "EggFinderLabel"
-    billboard.Adornee = adornee
-    billboard.AlwaysOnTop = true
-    billboard.Size = UDim2.new(0, 230, 0, 65)
-    billboard.StudsOffsetWorldSpace =
-        Vector3.new(
-            0,
-            math.max(3, result.size.Y / 2 + 2),
-            0
-        )
-    billboard.Parent = markerFolder
-
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, 0, 1, 0)
-    label.BackgroundColor3 =
-        Color3.fromRGB(15, 20, 30)
-    label.BackgroundTransparency = 0.25
-    label.TextColor3 = markerColor(
-        result.classification
-    )
-    label.Font = Enum.Font.GothamBold
-    label.TextSize = 13
-    label.TextWrapped = true
-    label.Text = result.classification
-        .. "\n" .. result.nest
-        .. "\nTamaño: "
-        .. formatNumber(result.size.Y)
-
-    label.Parent = billboard
-end
-
--- ================================================
--- ESCANEO COMPLETO
--- ================================================
-
-local function scanAll(reason)
-    local folder = workspace:FindFirstChild(
-        "AreaEggSlotsClient"
-    )
-
-    if not folder then
-        log("ERROR: no existe AreaEggSlotsClient", true)
-        return
-    end
-
-    local results = {}
-
-    for _, egg in ipairs(folder:GetChildren()) do
-        if egg:IsA("Model") then
-            table.insert(
-                results,
-                analyzeEgg(egg)
-            )
-        end
-    end
-
-    table.sort(results, function(a, b)
-        if a.score ~= b.score then
-            return a.score > b.score
-        end
-
-        return a.nest < b.nest
+    dismiss.MouseButton1Click:Connect(function()
+        alertGui:Destroy()
+        alertGui = nil
     end)
 
-    lastResults = results
-    lastEggCount = #results
+    pcall(function()
+        SG:SetCore("SendNotification", {
+            Title = "¡HUEVO ENCONTRADO!",
+            Text = candidate.zone
+                .. " | " .. string.format("%.1f", candidate.height)
+                .. " studs. Busqueda detenida.",
+            Duration = 20
+        })
+    end)
 
-    local secret = 0
-    local eternal = 0
-    local divine = 0
-    local normal = 0
+    for i = 1, 3 do
+        task.delay((i - 1) * 0.65, playAlert)
+    end
+end
 
-    local signatureParts = {}
+local function getEggs()
+    local folder = getEggFolder()
+    if not folder then return {} end
 
-    for _, result in ipairs(results) do
-        if result.classification == "POSIBLE DIVINE" then
-            divine = divine + 1
-        elseif result.classification == "POSIBLE ETERNAL" then
-            eternal = eternal + 1
-        elseif result.classification == "POSIBLE SECRET" then
-            secret = secret + 1
-        else
-            normal = normal + 1
+    local eggs = {}
+
+    for _, obj in ipairs(folder:GetChildren()) do
+        if obj:IsA("Model") or obj:IsA("BasePart") then
+            table.insert(eggs, obj)
+        end
+    end
+
+    return eggs
+end
+
+local function scan()
+    if scanBusy or found or not running then return end
+    scanBusy = true
+
+    local ok, err = pcall(function()
+        local eggs = getEggs()
+        local nests = collectNests()
+
+        currentEggCount = #eggs
+        currentCandidates = {}
+
+        local unknownSpecial = 0
+        local targetSpecial = 0
+        local best
+
+        for _, egg in ipairs(eggs) do
+            local effects = inspectEffects(egg)
+
+            if effects.special then
+                local zone, mapped = findEggZone(egg, nests)
+                local height = measureEgg(egg)
+
+                if not mapped then
+                    unknownSpecial = unknownSpecial + 1
+                elseif zone then
+                    targetSpecial = targetSpecial + 1
+
+                    local candidate = {
+                        zone = zone,
+                        height = height,
+                        rarity = effects.rarity,
+                        score = effects.score,
+                        egg = egg
+                    }
+
+                    table.insert(currentCandidates, candidate)
+
+                    if height >= CONFIG.Minimum then
+                        if not best or height > best.height then
+                            best = candidate
+                        end
+                    end
+                end
+            end
         end
 
-        table.insert(
-            signatureParts,
-            result.name .. ":"
-            .. result.classification .. ":"
-            .. math.floor(result.score * 10)
+        stats.Text = string.format(
+            "Servidor: %d | Huevos: %d | Especiales: %d",
+            scannedServers + 1,
+            currentEggCount,
+            targetSpecial
         )
-    end
 
-    table.sort(signatureParts)
+        if best then
+            found = true
+            CONFIG.AutoHop = false
 
-    local signature = table.concat(
-        signatureParts,
-        "|"
-    )
-
-    if signature == lastSignature
-        and reason == "AUTOMATICO" then
-        return
-    end
-
-    lastSignature = signature
-
-    clearMarkers()
-
-    log("================================", true)
-    log("ESCANEO VISUAL: " .. reason, true)
-    log("HUEVOS: " .. #results, true)
-
-    log(
-        "POSIBLES: SECRET=" .. secret
-        .. " ETERNAL=" .. eternal
-        .. " DIVINE=" .. divine
-        .. " NORMAL=" .. normal,
-        true
-    )
-
-    log("================================", true)
-
-    for _, result in ipairs(results) do
-        if result.classification ~= "NORMAL" then
-
-            log(
-                "[" .. result.classification .. "] "
-                .. result.nest
-                .. " | TAM=" .. formatSize(result.size)
-                .. " | SCORE="
-                .. formatNumber(result.score),
-                true
+            setStatus(
+                "¡HUEVO ENCONTRADO! NO CAMBIAR",
+                Color3.fromRGB(90, 255, 150)
             )
 
-            log(
-                "  EFECTOS: "
-                .. "L=" .. result.lights
-                .. " P=" .. result.particles
-                .. " B=" .. result.beams
-                .. " T=" .. result.trails
-                .. " H=" .. result.highlights
+            results.Text = string.format(
+                "ZONA: %s\nALTURA: %.2f studs\n%s",
+                best.zone,
+                best.height,
+                best.rarity
             )
 
-            log(
-                "  COLORES: "
-                .. "PINK=" .. result.pink
-                .. " GOLD=" .. result.gold
-                .. " WHITE=" .. result.white
-                .. " BRIGHT=" .. result.bright
-            )
+            log(string.format(
+                "ENCONTRADO | Zona=%s | Altura=%.2f | Minimo=%.2f | Rareza=%s | JobId=%s",
+                best.zone,
+                best.height,
+                CONFIG.Minimum,
+                best.rarity,
+                game.JobId
+            ))
 
-            createMarker(result)
-        end
-    end
-
-    resultStatus.Text =
-        "S:" .. secret
-        .. " E:" .. eternal
-        .. " D:" .. divine
-        .. " N:" .. normal
-
-    render()
-end
-
--- ================================================
--- MONITOR DE REINICIOS
--- ================================================
-
-local function getEggCount()
-    local folder = workspace:FindFirstChild(
-        "AreaEggSlotsClient"
-    )
-
-    if not folder then
-        return 0
-    end
-
-    local n = 0
-
-    for _, egg in ipairs(folder:GetChildren()) do
-        if egg:IsA("Model") then
-            n = n + 1
-        end
-    end
-
-    return n
-end
-
-local function monitor()
-    generation = generation + 1
-    local myGeneration = generation
-
-    started = os.clock()
-    report = {}
-    summary = {}
-    resetCount = 0
-    lastSignature = ""
-
-    log("EGG FINDER V25", true)
-    log("DETECTOR VISUAL DE HUEVOS", true)
-
-    scanNests()
-    scanAll("INICIAL")
-
-    local previousCount = getEggCount()
-    local resetPending = false
-    local resetStart = 0
-    local lastHeartbeat = -1
-
-    while running
-        and generation == myGeneration
-        and gui.Parent
-        and elapsed() < DURATION do
-
-        task.wait(INTERVAL)
-
-        if not running
-            or generation ~= myGeneration then
+            showAlert(best)
             return
         end
 
-        local countNow = getEggCount()
+        table.sort(currentCandidates, function(a, b)
+            return a.height > b.height
+        end)
 
-        if not resetPending
-            and previousCount >= 40
-            and countNow <= 20 then
+        if #currentCandidates > 0 then
+            local largest = currentCandidates[1]
 
-            resetPending = true
-            resetStart = elapsed()
-
-            log("REINICIO DETECTADO", true)
-            log(
-                "HUEVOS ANTES: "
-                .. previousCount,
-                true
+            results.Text = string.format(
+                "Especiales en zonas objetivo: %d\nMayor: %s | %.2f studs\nMinimo requerido: %.2f studs",
+                #currentCandidates,
+                largest.zone,
+                largest.height,
+                CONFIG.Minimum
             )
-
-            clearMarkers()
-            render()
+        else
+            results.Text =
+                "Sin huevos especiales confirmados\n"
+                .. "en las cuatro zonas prioritarias."
         end
 
-        if resetPending and countNow >= 60 then
-            resetPending = false
-            resetCount = resetCount + 1
-
-            log(
-                "REINICIO COMPLETADO #"
-                .. resetCount,
-                true
-            )
-
-            log(
-                "RECARGA: "
-                .. (elapsed() - resetStart)
-                .. " SEGUNDOS",
-                true
-            )
-
-            scanAll("DESPUES DEL REINICIO")
-        elseif not resetPending then
-            scanAll("AUTOMATICO")
+        if unknownSpecial > 0 then
+            results.Text = results.Text
+                .. "\nSin zona identificada: "
+                .. unknownSpecial
         end
 
-        previousCount = countNow
-
-        local sec = elapsed()
-
-        if sec % 30 == 0
-            and sec ~= lastHeartbeat then
-
-            lastHeartbeat = sec
-
-            log(
-                "HEARTBEAT | huevos="
-                .. countNow
-                .. " | reinicios="
-                .. resetCount,
-                true
-            )
-
-            render()
-        end
-
-        status.Text = string.format(
-            "Tiempo %ds/360 | Huevos %d | Reinicios %d",
-            sec,
-            countNow,
-            resetCount
+        setStatus(
+            "Escaneando | Minimo: "
+            .. tostring(CONFIG.Minimum),
+            Color3.fromRGB(255, 220, 120)
         )
-    end
 
-    if generation ~= myGeneration then
-        return
-    end
+        log(string.format(
+            "ESCANEO | Huevos=%d | Candidatos=%d | ZonaDesconocida=%d | Minimo=%.2f",
+            currentEggCount,
+            #currentCandidates,
+            unknownSpecial,
+            CONFIG.Minimum
+        ))
+    end)
 
-    log("MONITOREO FINALIZADO", true)
-    render()
+    scanBusy = false
+
+    if not ok then
+        warn("[EGG FINDER V26] Error: " .. tostring(err))
+        setStatus("Error de escaneo; reintentando...")
+    end
 end
 
--- ================================================
--- BOTONES
--- ================================================
+local function httpGet(url)
+    local requestFunction =
+        (syn and syn.request)
+        or http_request
+        or request
 
-local function copyText(value, label)
-    copyCount = copyCount + 1
+    if requestFunction then
+        local ok, response = pcall(function()
+            return requestFunction({
+                Url = url,
+                Method = "GET",
+                Headers = {
+                    ["Accept"] = "application/json"
+                }
+            })
+        end)
 
-    local fn = setclipboard or toclipboard
+        if ok and response
+        and (response.StatusCode == 200 or response.Success)
+        and response.Body then
+            return response.Body
+        end
+    end
 
-    if type(fn) ~= "function" then
-        resultStatus.Text = "CLIPBOARD NO DISPONIBLE"
+    local ok, body = pcall(function()
+        return game:HttpGet(url)
+    end)
+
+    if ok then return body end
+    return nil
+end
+
+local function getServerList()
+    local servers = {}
+    local cursor = nil
+
+    for page = 1, CONFIG.MaxPages do
+        local url =
+            "https://games.roblox.com/v1/games/"
+            .. tostring(game.PlaceId)
+            .. "/servers/Public?sortOrder=Asc&limit=100"
+
+        if cursor then
+            url = url .. "&cursor=" .. HS:UrlEncode(cursor)
+        end
+
+        local body = httpGet(url)
+        if not body then
+            return nil, "No se pudo consultar la lista de servidores"
+        end
+
+        local ok, data = pcall(function()
+            return HS:JSONDecode(body)
+        end)
+
+        if not ok or type(data) ~= "table" then
+            return nil, "Respuesta de servidores no valida"
+        end
+
+        for _, server in ipairs(data.data or {}) do
+            if server.id
+            and server.id ~= game.JobId
+            and not visited[server.id]
+            and server.playing
+            and server.maxPlayers
+            and server.playing < server.maxPlayers then
+                table.insert(servers, server.id)
+            end
+        end
+
+        cursor = data.nextPageCursor
+        if not cursor or #servers >= 25 then
+            break
+        end
+    end
+
+    return servers
+end
+
+local function queueNextRun()
+    local queueFunction =
+        queue_on_teleport
+        or (syn and syn.queue_on_teleport)
+        or (fluxus and fluxus.queue_on_teleport)
+
+    if not queueFunction then
         return false
     end
 
-    local ok, err = pcall(function()
-        fn(value)
-    end)
+    local ids = {}
 
-    if ok then
-        resultStatus.Text =
-            label .. " ENVIADO | "
-            .. #value .. " chars"
-    else
-        resultStatus.Text =
-            "ERROR: " .. tostring(err)
+    for id in pairs(visited) do
+        table.insert(ids, id)
+        if #ids >= 150 then break end
     end
+
+    local saved = HS:JSONEncode({
+        minimum = CONFIG.Minimum,
+        auto = CONFIG.AutoHop,
+        visited = ids,
+        servers = scannedServers
+    })
+
+    local code =
+        "getgenv().EggFinderV26Resume = "
+        .. string.format("%q", saved)
+        .. "\nloadstring(game:HttpGet("
+        .. string.format("%q", LOADER_URL)
+        .. "))()"
+
+    local ok = pcall(function()
+        queueFunction(code)
+    end)
 
     return ok
 end
 
-copyAll.MouseButton1Click:Connect(function()
-    copyText(
-        table.concat(report, "\n"),
-        "TODO"
-    )
-end)
+local function hopServer(force)
+    if hopping or found or not running then return end
+    if not force and not CONFIG.AutoHop then return end
 
-copySummary.MouseButton1Click:Connect(function()
-    copyText(
-        table.concat(summary, "\n"),
-        "RESUMEN"
-    )
-end)
+    hopping = true
+    setStatus("Buscando otro servidor...")
 
-copyPart.MouseButton1Click:Connect(function()
-    local text = table.concat(report, "\n")
+    local servers, err = getServerList()
 
-    local total = math.max(
-        1,
-        math.ceil(#text / CHUNK_SIZE)
-    )
+    if not servers then
+        hopping = false
+        CONFIG.AutoHop = false
+        autoButton.Text = "AUTO HOP: NO"
+        autoButton.BackgroundColor3 =
+            Color3.fromRGB(120, 65, 65)
 
-    if partIndex > total then
-        partIndex = 1
+        setStatus("AUTO HOP DETENIDO: error de servidores")
+        results.Text = tostring(err)
+        log(err)
+        return
     end
 
-    local startIndex =
-        (partIndex - 1) * CHUNK_SIZE + 1
+    if #servers == 0 then
+        hopping = false
+        CONFIG.AutoHop = false
+        autoButton.Text = "AUTO HOP: NO"
+        autoButton.BackgroundColor3 =
+            Color3.fromRGB(120, 65, 65)
 
-    local part = string.sub(
-        text,
-        startIndex,
-        startIndex + CHUNK_SIZE - 1
-    )
-
-    local ok = copyText(
-        part,
-        "PARTE " .. partIndex .. "/" .. total
-    )
-
-    if ok then
-        partIndex = partIndex + 1
+        setStatus("No hay servidores nuevos disponibles")
+        return
     end
 
-    if partIndex > total then
-        partIndex = 1
+    local target = servers[math.random(1, #servers)]
+    visited[game.JobId] = true
+    visited[target] = true
+
+    scannedServers = scannedServers + 1
+
+    local queued = queueNextRun()
+
+    setStatus("Cambiando de servidor...")
+    log("TELEPORT | Destino=" .. target
+        .. " | AutoReinicio=" .. tostring(queued))
+
+    if not queued then
+        results.Text =
+            "Aviso: Delta no confirmo queue_on_teleport.\n"
+            .. "Puede ser necesario ejecutar V26 de nuevo."
     end
 
-    copyPart.Text = "COPIAR PARTE " .. partIndex
+    local ok, teleportError = pcall(function()
+        TS:TeleportToPlaceInstance(
+            game.PlaceId,
+            target,
+            player
+        )
+    end)
+
+    if not ok then
+        hopping = false
+        scannedServers = math.max(0, scannedServers - 1)
+        visited[target] = nil
+
+        setStatus("Error al cambiar de servidor")
+        results.Text = tostring(teleportError)
+        log("ERROR TELEPORT: " .. tostring(teleportError))
+    else
+        task.delay(15, function()
+            if running and not found then
+                hopping = false
+            end
+        end)
+    end
+end
+
+local function updateAutoButton()
+    autoButton.Text =
+        CONFIG.AutoHop and "AUTO HOP: SI" or "AUTO HOP: NO"
+
+    autoButton.BackgroundColor3 =
+        CONFIG.AutoHop
+        and Color3.fromRGB(31, 130, 95)
+        or Color3.fromRGB(120, 65, 65)
+end
+
+autoButton.MouseButton1Click:Connect(function()
+    if found then
+        setStatus("Huevo encontrado: busqueda detenida")
+        return
+    end
+
+    CONFIG.AutoHop = not CONFIG.AutoHop
+    updateAutoButton()
 end)
 
 scanButton.MouseButton1Click:Connect(function()
-    scanAll("MANUAL")
-end)
-
-markerButton.MouseButton1Click:Connect(function()
-    markersEnabled = not markersEnabled
-
-    markerButton.Text = markersEnabled
-        and "MARCADORES: ON"
-        or "MARCADORES: OFF"
-
-    clearMarkers()
-
-    if markersEnabled then
-        for _, result in ipairs(lastResults) do
-            createMarker(result)
-        end
+    if not found then
+        task.spawn(scan)
     end
 end)
 
-restartButton.MouseButton1Click:Connect(function()
-    generation = generation + 1
-    partIndex = 1
-    lastSignature = ""
-
-    clearMarkers()
-    task.spawn(monitor)
+hopButton.MouseButton1Click:Connect(function()
+    if not found then
+        task.spawn(function()
+            hopServer(true)
+        end)
+    end
 end)
+
+pauseButton.MouseButton1Click:Connect(function()
+    if found then return end
+
+    CONFIG.AutoHop = false
+    updateAutoButton()
+    setStatus("Busqueda automatica pausada")
+end)
+
+copyButton.MouseButton1Click:Connect(function()
+    local lines = {
+        "EGG FINDER V26",
+        "PlaceId: " .. tostring(game.PlaceId),
+        "JobId: " .. tostring(game.JobId),
+        "Minimo: " .. tostring(CONFIG.Minimum),
+        "Huevos: " .. tostring(currentEggCount),
+        "Servidores revisados: "
+            .. tostring(scannedServers + 1),
+        "Encontrado: " .. tostring(found),
+        "Ultimo registro: " .. lastLog
+    }
+
+    for _, c in ipairs(currentCandidates) do
+        table.insert(lines, string.format(
+            "%s | %.2f studs | %s | Score %.1f",
+            c.zone, c.height, c.rarity, c.score
+        ))
+    end
+
+    local clipboard = setclipboard or toclipboard
+
+    if clipboard then
+        local ok = pcall(function()
+            clipboard(table.concat(lines, "\n"))
+        end)
+
+        setStatus(
+            ok and "Resumen enviado al portapapeles"
+            or "Error al copiar"
+        )
+    else
+        setStatus("Portapapeles no disponible")
+    end
+end)
+
+local function stop()
+    running = false
+    CONFIG.AutoHop = false
+end
+
+getgenv().EggFinderV26Stop = stop
 
 close.MouseButton1Click:Connect(function()
-    running = false
-    generation = generation + 1
-
-    clearMarkers()
-    markerFolder:Destroy()
-
-    if env.EggFinderStop then
-        env.EggFinderStop = nil
-    end
-
+    stop()
     gui:Destroy()
 end)
 
-task.spawn(monitor)
+restartButton.MouseButton1Click:Connect(function()
+    found = false
+    hopping = false
+    CONFIG.AutoHop = false
+    currentCandidates = {}
+
+    if alertGui then
+        alertGui:Destroy()
+        alertGui = nil
+    end
+
+    updateAutoButton()
+    setStatus("Reiniciado: escaneo manual")
+    task.spawn(scan)
+end)
+
+-- Recuperar configuracion tras cambiar de servidor.
+do
+    local saved = getgenv().EggFinderV26Resume
+
+    if type(saved) == "string" then
+        local ok, data = pcall(function()
+            return HS:JSONDecode(saved)
+        end)
+
+        if ok and type(data) == "table" then
+            CONFIG.Minimum = tonumber(data.minimum) or 10
+            CONFIG.AutoHop = data.auto == true
+            scannedServers = tonumber(data.servers) or 0
+
+            for _, id in ipairs(data.visited or {}) do
+                visited[id] = true
+            end
+
+            minimumBox.Text = tostring(CONFIG.Minimum)
+            updatePresetColors()
+            updateAutoButton()
+        end
+
+        getgenv().EggFinderV26Resume = nil
+    end
+end
+
+-- Evitar volver al servidor actual.
+visited[game.JobId] = true
+
+-- Bucle principal.
+task.spawn(function()
+    setStatus("Esperando carga de huevos...")
+
+    local firstScan = true
+    local noEggsSince = nil
+    local lastScan = 0
+
+    while running do
+        if not found and not hopping then
+            if os.clock() - lastScan >= CONFIG.ScanInterval then
+                scan()
+                lastScan = os.clock()
+            end
+
+            if currentEggCount == 0 then
+                noEggsSince = noEggsSince or os.clock()
+            else
+                noEggsSince = nil
+            end
+
+            if firstScan then
+                task.wait(CONFIG.LoadWait)
+                firstScan = false
+                scan()
+            end
+
+            if CONFIG.AutoHop and not found then
+                local elapsed = os.clock() - startedAt
+
+                if currentEggCount >= 60 then
+                    -- Si hay candidatos sin zona identificada,
+                    -- no abandonar el servidor a ciegas.
+                    local uncertain = lastLog:match(
+                        "ZonaDesconocida=(%d+)"
+                    )
+
+                    if tonumber(uncertain or 0) > 0 then
+                        CONFIG.AutoHop = false
+                        updateAutoButton()
+
+                        setStatus(
+                            "REVISION NECESARIA: zona desconocida"
+                        )
+                    else
+                        task.wait(CONFIG.HopDelay)
+
+                        if running and not found
+                        and CONFIG.AutoHop then
+                            hopServer(false)
+                        end
+                    end
+
+                elseif noEggsSince
+                and os.clock() - noEggsSince >= CONFIG.EmptyWait then
+                    CONFIG.AutoHop = false
+                    updateAutoButton()
+
+                    setStatus(
+                        "No cargaron los huevos: revisar servidor"
+                    )
+
+                elseif elapsed > 45 and currentEggCount > 0
+                and currentEggCount < 60 then
+                    setStatus(
+                        "Esperando carga completa de huevos..."
+                    )
+                end
+            end
+        end
+
+        task.wait(1)
+    end
+end)
+
+log("V26 iniciado | Minimo=" .. CONFIG.Minimum)
