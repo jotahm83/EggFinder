@@ -1,13 +1,12 @@
 
--- EGG FINDER V19
--- INSPECTOR DE HUEVOS COLOCADOS
+-- EGG FINDER V20
+-- COMPARADOR DE HUEVOS, NIDOS Y BASES
 
 local Players = game:GetService("Players")
-local RS = game:GetService("ReplicatedStorage")
 local pg = Players.LocalPlayer:WaitForChild("PlayerGui")
 
-local old = pg:FindFirstChild("EggFinder")
-if old then old:Destroy() end
+local previous = pg:FindFirstChild("EggFinder")
+if previous then previous:Destroy() end
 
 local gui = Instance.new("ScreenGui")
 gui.Name = "EggFinder"
@@ -15,40 +14,42 @@ gui.ResetOnSpawn = false
 gui.Parent = pg
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0.46,0,0.7,0)
-frame.Position = UDim2.new(0.51,0,0.14,0)
-frame.BackgroundColor3 = Color3.fromRGB(15,15,25)
+frame.Size = UDim2.new(0.48,0,0.72,0)
+frame.Position = UDim2.new(0.5,0,0.12,0)
+frame.BackgroundColor3 = Color3.fromRGB(15,17,27)
 frame.Active = true
 frame.Draggable = true
 frame.Parent = gui
 
 local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1,-35,0,34)
-title.BackgroundColor3 = Color3.fromRGB(35,35,55)
-title.TextColor3 = Color3.fromRGB(0,255,120)
+title.BackgroundColor3 = Color3.fromRGB(32,38,55)
+title.TextColor3 = Color3.fromRGB(0,255,140)
+title.Font = Enum.Font.GothamBold
 title.TextSize = 15
-title.Text = "EGG FINDER V19"
+title.Text = "EGG FINDER V20"
 title.Parent = frame
 
-local function button(txt,x,w,color)
+local function makeButton(text,x,width,color)
     local b = Instance.new("TextButton")
-    b.Size = UDim2.new(w,0,0,34)
+    b.Size = UDim2.new(width,0,0,34)
     b.Position = UDim2.new(x,0,0,36)
     b.BackgroundColor3 = color
     b.TextColor3 = Color3.new(1,1,1)
-    b.TextSize = 13
-    b.Text = txt
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 12
+    b.Text = text
     b.Parent = frame
     return b
 end
 
-local copy = button(
+local copy = makeButton(
     "COPIAR TODO",0,0.49,
     Color3.fromRGB(25,110,65)
 )
 
-local refresh = button(
-    "REINICIAR",0.51,0.49,
+local refresh = makeButton(
+    "ACTUALIZAR",0.51,0.49,
     Color3.fromRGB(35,85,150)
 )
 
@@ -70,7 +71,7 @@ scroll.Parent = frame
 local output = Instance.new("TextLabel")
 output.Size = UDim2.new(1,-12,0,1000)
 output.BackgroundTransparency = 1
-output.TextColor3 = Color3.fromRGB(0,255,120)
+output.TextColor3 = Color3.fromRGB(0,255,140)
 output.Font = Enum.Font.Code
 output.TextSize = 12
 output.TextWrapped = true
@@ -79,9 +80,6 @@ output.TextYAlignment = Enum.TextYAlignment.Top
 output.Parent = scroll
 
 local lines = {}
-local connections = {}
-local runId = 0
-local eventCount = 0
 
 local function add(s)
     table.insert(lines,tostring(s))
@@ -89,181 +87,265 @@ end
 
 local function redraw()
     output.Text = table.concat(lines,"\n")
-    local h = math.max(1000,#lines*42)
-    output.Size = UDim2.new(1,-12,0,h)
-    scroll.CanvasSize = UDim2.new(0,0,0,h+30)
+    local height = math.max(1000,#lines*32)
+    output.Size = UDim2.new(1,-12,0,height)
+    scroll.CanvasSize = UDim2.new(0,0,0,height+30)
 end
 
-local function stop()
-    runId = runId + 1
-    for _,c in ipairs(connections) do
-        pcall(function()
-            c:Disconnect()
-        end)
-    end
-    connections = {}
-end
-
-local function describe(obj,indent)
-    indent = indent or ""
-    add(indent..obj.Name.." ["..obj.ClassName.."]")
-
-    local attrs = obj:GetAttributes()
-    local keys = {}
-
-    for k in pairs(attrs) do
-        table.insert(keys,k)
-    end
-
-    table.sort(keys)
-
-    for _,k in ipairs(keys) do
-        add(indent.."  ATTR "
-            ..k.." = "..tostring(attrs[k]))
-    end
-
-    if obj:IsA("ValueBase") then
-        local ok,value = pcall(function()
-            return tostring(obj.Value)
-        end)
-        if ok then
-            add(indent.."  VALUE = "..value)
-        end
-    end
-
+local function positionOf(obj)
     if obj:IsA("BasePart") then
-        local p = obj.Position
-        add(indent.."  POS = "
-            ..math.floor(p.X)..","
-            ..math.floor(p.Y)..","
-            ..math.floor(p.Z))
-    elseif obj:IsA("Model") then
-        local ok,pivot = pcall(function()
-            return obj:GetPivot().Position
+        return obj.Position
+    end
+
+    if obj:IsA("Model") then
+        local part = obj.PrimaryPart
+        if part then
+            return part.Position
+        end
+
+        local ok,cf = pcall(function()
+            return obj:GetBoundingBox()
         end)
+
         if ok then
-            add(indent.."  PIVOT = "
-                ..math.floor(pivot.X)..","
-                ..math.floor(pivot.Y)..","
-                ..math.floor(pivot.Z))
+            return cf.Position
         end
     end
+
+    return nil
 end
 
-local function inspectEgg(obj)
+local function formatPos(p)
+    if not p then return "DESCONOCIDA" end
+    return string.format(
+        "%.0f, %.0f, %.0f",
+        p.X,p.Y,p.Z
+    )
+end
+
+local function nearest(pos,items)
+    local best = nil
+    local bestDistance = math.huge
+
+    for _,item in ipairs(items) do
+        local d = (pos-item.pos).Magnitude
+
+        if d < bestDistance then
+            bestDistance = d
+            best = item
+        end
+    end
+
+    return best,bestDistance
+end
+
+local function run()
+    lines = {}
+    add("EGG FINDER V20")
+    add("COMPARACION DE POSICIONES")
     add("")
-    add("=== HUEVO / MODELO ===")
-    describe(obj)
 
-    local descendants = obj:GetDescendants()
-    add("Descendientes: "..#descendants)
+    local nests = {}
+    local zones = {}
+    local plots = {}
+    local eggs = {}
 
-    local shown = 0
-    for _,child in ipairs(descendants) do
-        if shown >= 45 then break end
+    local areas = workspace:FindFirstChild("World")
+    areas = areas and areas:FindFirstChild("Areas")
+    local guards = areas and areas:FindFirstChild("GuardAreas")
 
-        if child:IsA("Model")
-            or child:IsA("ValueBase")
-            or child:IsA("Folder")
-            or child:IsA("BasePart")
-            or next(child:GetAttributes()) ~= nil then
+    add("=== FASE 1: ZONAS Y NIDOS ===")
 
-            shown = shown + 1
-            describe(child,"  ")
+    if guards then
+        for _,zone in ipairs(guards:GetChildren()) do
+            local nestFolder = zone:FindFirstChild("Nests")
+
+            if nestFolder then
+                local zoneData = {
+                    name = zone.Name,
+                    nests = {}
+                }
+
+                for _,nest in ipairs(nestFolder:GetChildren()) do
+                    local pos = positionOf(nest)
+
+                    if pos then
+                        local entry = {
+                            zone = zone.Name,
+                            name = nest.Name,
+                            pos = pos
+                        }
+
+                        table.insert(nests,entry)
+                        table.insert(zoneData.nests,entry)
+                    end
+                end
+
+                table.insert(zones,zoneData)
+            end
         end
+    else
+        add("NO SE ENCONTRO GuardAreas")
     end
 
-    add("Detalles mostrados: "..shown)
-end
-
-local function start()
-    stop()
-    local thisRun = runId
-    lines = {"EGG FINDER V19",""}
-    eventCount = 0
-
-    local ok,err = pcall(function()
-        local root = workspace:FindFirstChild(
-            "PlacedEggRenders"
-        )
-
-        add("FASE 1: PLACED EGG RENDERS")
-
-        if not root then
-            add("Carpeta no encontrada.")
-        else
-            local eggs = root:GetChildren()
-            add("Objetos directos: "..#eggs)
-
-            for i = 1,math.min(#eggs,8) do
-                inspectEgg(eggs[i])
-            end
-
-            local c = root.ChildAdded:Connect(function(obj)
-                if thisRun ~= runId then return end
-                if eventCount >= 15 then return end
-
-                eventCount = eventCount + 1
-                add("")
-                add("NUEVO OBJETO #"..eventCount)
-                inspectEgg(obj)
-                redraw()
-            end)
-
-            table.insert(connections,c)
-        end
-
-        add("")
-        add("FASE 2: MODULOS IMPORTANTES")
-
-        local paths = {
-            {"Client","EggState"},
-            {"Client","Notifications","RareSpawnText"},
-            {"Data","MonsterEgg"},
-            {"Data","Rarity"},
-            {"Data","Rarity","Configs","Secret"},
-            {"Data","Rarity","Configs","Eternal"},
-            {"Data","Rarity","Configs","Divine"}
-        }
-
-        for _,path in ipairs(paths) do
-            local obj = RS
-            for _,name in ipairs(path) do
-                obj = obj and obj:FindFirstChild(name)
-            end
-
-            if obj then
-                add(obj:GetFullName())
-                add("Clase: "..obj.ClassName)
-                local attrs = obj:GetAttributes()
-                for k,v in pairs(attrs) do
-                    add("  "..tostring(k)
-                        .." = "..tostring(v))
-                end
-            else
-                add("NO ENCONTRADO: "
-                    ..table.concat(path,"/"))
-            end
-        end
-
-        add("")
-        add("Monitoreando nuevos objetos 90s...")
+    table.sort(zones,function(a,b)
+        return a.name < b.name
     end)
 
-    if not ok then
-        add("ERROR: "..tostring(err))
+    for _,zone in ipairs(zones) do
+        add("")
+        add("ZONA: "..zone.name)
+        add("Nidos: "..#zone.nests)
+
+        for i,nest in ipairs(zone.nests) do
+            add("  Nido "..i..": "
+                ..formatPos(nest.pos))
+        end
     end
+
+    add("")
+    add("TOTAL NIDOS: "..#nests)
+
+    add("")
+    add("=== FASE 2: BASES ===")
+
+    local plotFolder = workspace:FindFirstChild("Plots")
+
+    if plotFolder then
+        for _,plot in ipairs(plotFolder:GetChildren()) do
+            local pos = positionOf(plot)
+
+            if pos then
+                table.insert(plots,{
+                    name = plot.Name,
+                    pos = pos
+                })
+            end
+        end
+    end
+
+    table.sort(plots,function(a,b)
+        return a.name < b.name
+    end)
+
+    for _,plot in ipairs(plots) do
+        add("Base "..plot.name..": "
+            ..formatPos(plot.pos))
+    end
+
+    add("TOTAL BASES: "..#plots)
+
+    add("")
+    add("=== FASE 3: HUEVOS ===")
+
+    local eggFolder = workspace:FindFirstChild(
+        "PlacedEggRenders"
+    )
+
+    if eggFolder then
+        for _,obj in ipairs(eggFolder:GetChildren()) do
+            local pos = positionOf(obj)
+
+            if pos then
+                table.insert(eggs,{
+                    name = obj.Name,
+                    pos = pos,
+                    obj = obj
+                })
+            end
+        end
+    else
+        add("NO SE ENCONTRO PlacedEggRenders")
+    end
+
+    add("TOTAL HUEVOS: "..#eggs)
+
+    local zoneMatches = {}
+    local plotMatches = {}
+    local unknown = 0
+
+    for _,zone in ipairs(zones) do
+        zoneMatches[zone.name] = 0
+    end
+
+    for _,plot in ipairs(plots) do
+        plotMatches[plot.name] = 0
+    end
+
+    for i,egg in ipairs(eggs) do
+        add("")
+        add("HUEVO "..i)
+        add("ID: "..egg.name)
+        add("Posicion: "..formatPos(egg.pos))
+
+        local nest,nd = nearest(egg.pos,nests)
+        local plot,pd = nearest(egg.pos,plots)
+
+        if nest then
+            add("Nido cercano: "..nest.zone)
+            add(string.format(
+                "Distancia al nido: %.1f studs",nd
+            ))
+        end
+
+        if plot then
+            add("Base cercana: "..plot.name)
+            add(string.format(
+                "Distancia a base: %.1f studs",pd
+            ))
+        end
+
+        -- Los umbrales son provisionales.
+        -- Una base se compara con su centro.
+        local nearNest = nest and nd <= 25
+        local nearPlot = plot and pd <= 100
+
+        if nearNest and (not nearPlot or nd < pd) then
+            add("CLASIFICACION: POSIBLE HUEVO DE ZONA")
+            zoneMatches[nest.zone] =
+                zoneMatches[nest.zone]+1
+
+        elseif nearPlot and (not nearNest or pd < nd) then
+            add("CLASIFICACION: POSIBLE HUEVO DE BASE")
+            plotMatches[plot.name] =
+                plotMatches[plot.name]+1
+
+        else
+            add("CLASIFICACION: SIN CONFIRMAR")
+            unknown = unknown+1
+        end
+    end
+
+    add("")
+    add("=== RESUMEN POR ZONA ===")
+
+    for _,zone in ipairs(zones) do
+        add(zone.name
+            .." | Nidos: "..#zone.nests
+            .." | Huevos cercanos: "
+            ..zoneMatches[zone.name])
+    end
+
+    add("")
+    add("=== RESUMEN POR BASE ===")
+
+    for _,plot in ipairs(plots) do
+        add("Base "..plot.name
+            .." | Huevos cercanos: "
+            ..plotMatches[plot.name])
+    end
+
+    add("")
+    add("SIN CONFIRMAR: "..unknown)
+    add("")
+    add("NOTA: Las distancias son aproximadas.")
+    add("La clasificacion aun no es definitiva.")
+    add("Los nidos sin coincidencia NO se")
+    add("consideran vacios automaticamente.")
+    add("")
+    add("FIN DEL INFORME V20")
 
     redraw()
-
-    task.delay(90,function()
-        if thisRun ~= runId then return end
-        add("")
-        add("MONITOREO FINALIZADO")
-        add("Nuevos objetos: "..eventCount)
-        redraw()
-        stop()
-    end)
 end
 
 copy.MouseButton1Click:Connect(function()
@@ -273,6 +355,7 @@ copy.MouseButton1Click:Connect(function()
         local ok = pcall(function()
             fn(table.concat(lines,"\n"))
         end)
+
         copy.Text = ok and "COPIADO!" or "ERROR"
     else
         copy.Text = "NO DISPONIBLE"
@@ -281,12 +364,20 @@ end)
 
 refresh.MouseButton1Click:Connect(function()
     copy.Text = "COPIAR TODO"
-    task.spawn(start)
+    local ok,err = pcall(run)
+
+    if not ok then
+        add("ERROR: "..tostring(err))
+        redraw()
+    end
 end)
 
 close.MouseButton1Click:Connect(function()
-    stop()
     gui:Destroy()
 end)
 
-task.spawn(start)
+local ok,err = pcall(run)
+if not ok then
+    add("ERROR: "..tostring(err))
+    redraw()
+end
