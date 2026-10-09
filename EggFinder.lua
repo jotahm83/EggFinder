@@ -1,10 +1,8 @@
 
--- EGG FINDER V16
--- EXPLORADOR DE ZONAS Y DATOS INTERNOS
+-- EGG FINDER V17 - INSPECTOR DE NIDOS
 
 local Players = game:GetService("Players")
-local player = Players.LocalPlayer
-local pg = player:WaitForChild("PlayerGui")
+local pg = Players.LocalPlayer:WaitForChild("PlayerGui")
 
 local old = pg:FindFirstChild("EggFinder")
 if old then old:Destroy() end
@@ -15,48 +13,47 @@ gui.ResetOnSpawn = false
 gui.Parent = pg
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0.43, 0, 0.7, 0)
-frame.Position = UDim2.new(0.54, 0, 0.14, 0)
+frame.Size = UDim2.new(0.46,0,0.70,0)
+frame.Position = UDim2.new(0.51,0,0.14,0)
 frame.BackgroundColor3 = Color3.fromRGB(15,15,25)
 frame.Active = true
 frame.Draggable = true
 frame.Parent = gui
 
-local function button(name, x, w, color)
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(w,0,0,34)
-    b.Position = UDim2.new(x,0,0,36)
-    b.BackgroundColor3 = color
-    b.TextColor3 = Color3.new(1,1,1)
-    b.TextSize = 13
-    b.Text = name
-    b.Parent = frame
-    return b
-end
-
 local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1,-35,0,34)
 title.BackgroundColor3 = Color3.fromRGB(35,35,55)
 title.TextColor3 = Color3.fromRGB(0,255,120)
-title.TextSize = 16
-title.Text = "EGG FINDER V16"
+title.TextSize = 15
+title.Text = "EGG FINDER V17 - NIDOS"
 title.Parent = frame
+
+local function makeButton(text,x,width,color)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(width,0,0,34)
+    b.Position = UDim2.new(x,0,0,36)
+    b.BackgroundColor3 = color
+    b.TextColor3 = Color3.new(1,1,1)
+    b.TextSize = 13
+    b.Text = text
+    b.Parent = frame
+    return b
+end
 
 local close = Instance.new("TextButton")
 close.Size = UDim2.new(0,35,0,34)
 close.Position = UDim2.new(1,-35,0,0)
-close.BackgroundColor3 = Color3.fromRGB(180,45,45)
+close.BackgroundColor3 = Color3.fromRGB(170,40,40)
 close.TextColor3 = Color3.new(1,1,1)
 close.Text = "X"
-close.TextSize = 20
 close.Parent = frame
 
-local copy = button(
+local copy = makeButton(
     "COPIAR TODO",0,0.49,
     Color3.fromRGB(25,110,65)
 )
 
-local refresh = button(
+local refresh = makeButton(
     "ACTUALIZAR",0.51,0.49,
     Color3.fromRGB(35,85,150)
 )
@@ -65,109 +62,89 @@ local scroll = Instance.new("ScrollingFrame")
 scroll.Size = UDim2.new(1,-10,1,-80)
 scroll.Position = UDim2.new(0,5,0,75)
 scroll.BackgroundTransparency = 1
-scroll.ScrollBarThickness = 6
-scroll.CanvasSize = UDim2.new(0,0,0,1000)
+scroll.ScrollBarThickness = 5
 scroll.Parent = frame
 
 local output = Instance.new("TextLabel")
 output.Size = UDim2.new(1,-12,0,1000)
 output.BackgroundTransparency = 1
 output.TextColor3 = Color3.fromRGB(0,255,120)
-output.Font = Enum.Font.Code
 output.TextSize = 12
+output.Font = Enum.Font.Code
 output.TextXAlignment = Enum.TextXAlignment.Left
 output.TextYAlignment = Enum.TextYAlignment.Top
 output.TextWrapped = true
-output.Text = "Preparando..."
+output.Text = "Analizando..."
 output.Parent = scroll
 
 local report = ""
-local keywords = {
-    "egg","huevo","spawn","pet","beast",
-    "rarity","rare","secret","eternal",
-    "divine","weight","money","income",
-    "reward","drop","chance","animal"
-}
-
-local function relevant(s)
-    s = string.lower(tostring(s))
-    for _, word in ipairs(keywords) do
-        if string.find(s,word,1,true) then
-            return true
-        end
-    end
-    return false
-end
 
 local function analyze()
-    output.Text = "Analizando zonas..."
-    local lines = {"EGG FINDER V16",""}
-    local count = 0
-
+    local lines = {"EGG FINDER V17",""}
     local function add(s)
         table.insert(lines,tostring(s))
     end
 
-    local function inspect(obj)
-        local found = relevant(obj.Name)
-        local details = {}
-
-        for key,value in pairs(obj:GetAttributes()) do
-            table.insert(
-                details,
-                tostring(key).." = "..tostring(value)
-            )
-            if relevant(key) then found = true end
-        end
-
-        if obj:IsA("ValueBase") then
-            local value = tostring(obj.Value)
-            table.insert(details,"Value = "..value)
-            if relevant(value) then found = true end
-        end
-
-        if found then
-            count = count + 1
-
-            if count <= 100 then
-                add(obj.Name.." ["..obj.ClassName.."]")
-                add("Ruta: "..obj:GetFullName())
-
-                for i = 1, math.min(#details,8) do
-                    add("  "..details[i])
-                end
-
-                add("")
-            end
-        end
-    end
-
     local ok,err = pcall(function()
-        local world = workspace:FindFirstChild("World")
-        local areas = world and
-            world:FindFirstChild("Areas")
+        local areas = workspace
+            :WaitForChild("World")
+            :WaitForChild("Areas")
+            :WaitForChild("GuardAreas")
 
-        if not areas then
-            add("No se encontro World.Areas")
-            return
-        end
+        for _,zone in ipairs(areas:GetChildren()) do
+            add("=== "..zone.Name.." ===")
 
-        local zones = areas:GetChildren()
-        add("Objetos en Areas: "..#zones)
-        add("")
+            local nests = zone:FindFirstChild("Nests")
+            if not nests then
+                add("Sin carpeta Nests")
+            else
+                local models = nests:GetChildren()
+                add("Nidos: "..#models)
 
-        for _,zone in ipairs(zones) do
-            add("=== ZONA: "..zone.Name.." ===")
+                -- Revisar hasta 2 nidos por zona
+                for i = 1,math.min(#models,2) do
+                    local nest = models[i]
+                    add("")
+                    add("NIDO "..i)
+                    add("Nombre: "..nest.Name)
+                    add("Clase: "..nest.ClassName)
 
-            local descendants = zone:GetDescendants()
-            add("Objetos internos: "..#descendants)
+                    local objects = {nest}
+                    for _,obj in ipairs(nest:GetDescendants()) do
+                        table.insert(objects,obj)
+                    end
 
-            inspect(zone)
+                    add("Objetos: "..#objects)
 
-            for _,obj in ipairs(descendants) do
-                inspect(obj)
+                    -- Limitar detalles por nido
+                    for j = 1,math.min(#objects,35) do
+                        local obj = objects[j]
+
+                        add("["..j.."] "
+                            ..obj.Name.." ["
+                            ..obj.ClassName.."]")
+
+                        local attrs = obj:GetAttributes()
+                        for key,value in pairs(attrs) do
+                            add("  ATTR "..tostring(key)
+                                .." = "..tostring(value))
+                        end
+
+                        if obj:IsA("ValueBase") then
+                            add("  VALUE = "
+                                ..tostring(obj.Value))
+                        end
+
+                        if obj:IsA("Model") then
+                            local primary = obj.PrimaryPart
+                            if primary then
+                                add("  PrimaryPart: "
+                                    ..primary.Name)
+                            end
+                        end
+                    end
+                end
             end
-
             add("")
         end
     end)
@@ -176,28 +153,24 @@ local function analyze()
         add("ERROR: "..tostring(err))
     end
 
-    add("----------------------")
-    add("Objetos relevantes: "..count)
-    add("Mostrados: "..math.min(count,100))
-
     report = table.concat(lines,"\n")
     output.Text = report
 
-    local height = math.max(1000,#lines*48)
+    local height = math.max(1000,#lines*34)
     output.Size = UDim2.new(1,-12,0,height)
-    scroll.CanvasSize = UDim2.new(0,0,0,height+30)
+    scroll.CanvasSize = UDim2.new(
+        0,0,0,height+40
+    )
+    scroll.CanvasPosition = Vector2.new(0,0)
 end
 
 copy.MouseButton1Click:Connect(function()
     local fn = setclipboard or toclipboard
-
     if fn then
         local ok = pcall(function()
             fn(report)
         end)
-
-        copy.Text = ok and
-            "COPIADO!" or "ERROR"
+        copy.Text = ok and "COPIADO!" or "ERROR"
     else
         copy.Text = "NO DISPONIBLE"
     end
@@ -213,3 +186,4 @@ close.MouseButton1Click:Connect(function()
 end)
 
 task.spawn(analyze)
+
