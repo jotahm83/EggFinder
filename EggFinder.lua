@@ -1,22 +1,29 @@
 
 --[[
- EGG FINDER V26.1
- Buscador de servidores con proteccion de teletransporte.
+ EGG FINDER V26.2
+ Correcciones:
+ - Los huevos menores al minimo NO detienen AUTO HOP.
+ - Las zonas desconocidas NO desactivan AUTO HOP.
+ - AUTO HOP puede reanudarse despues de encontrar un huevo.
+ - Al reanudar, busca inmediatamente otro servidor.
+ - Maneja fallos y tiempos de espera de teletransporte.
+ - Conserva minimo configurable y alerta sonora.
 
- Zonas prioritarias:
- - Cherry Blossom
- - Titan Temple
- - Demons / Angels / Light Dark
- - Enchanted Forest
-
- Detecta candidatos especiales por efectos visuales.
- No garantiza la rareza real ni los ingresos del huevo.
+ NOTA:
+ La rareza se estima a partir de efectos visuales.
+ No es una lectura garantizada de la rareza real.
 ]]
 
 local G = getgenv()
 
-if type(G.EggFinderStop) == "function" then
-    pcall(G.EggFinderStop)
+for _, key in ipairs({
+    "EggFinderStop",
+    "EggFinderV26Stop",
+    "EggFinderV262Stop"
+}) do
+    if type(G[key]) == "function" then
+        pcall(G[key])
+    end
 end
 
 local Players = game:GetService("Players")
@@ -39,7 +46,8 @@ local config = {
     loadWait = 12,
     maxTeleportWait = 20,
     minimumFreeSlots = 3,
-    serverPages = 5
+    serverPages = 5,
+    retryDelay = 3
 }
 
 local state = {
@@ -58,13 +66,13 @@ local state = {
     scanBusy = false,
     serverEnteredAt = os.clock(),
     lastScanAt = 0,
-    nextHopAt = 0
+    nextHopAt = 0,
+    loaded = false,
+    targetServer = nil
 }
 
-local oldGui = playerGui:FindFirstChild("EggFinderV261")
-if oldGui then oldGui:Destroy() end
-
 local connections = {}
+local alertFrame
 
 local function connect(signal, callback)
     local c = signal:Connect(callback)
@@ -89,16 +97,25 @@ local function corner(parent, radius)
     }, parent)
 end
 
+for _, name in ipairs({
+    "EggFinderV26",
+    "EggFinderV261",
+    "EggFinderV262"
+}) do
+    local old = playerGui:FindFirstChild(name)
+    if old then old:Destroy() end
+end
+
 local gui = create("ScreenGui", {
-    Name = "EggFinderV261",
+    Name = "EggFinderV262",
     ResetOnSpawn = false,
     IgnoreGuiInset = true,
     DisplayOrder = 999999
 }, playerGui)
 
 local panel = create("Frame", {
-    Size = UDim2.fromOffset(340, 480),
-    Position = UDim2.new(0.5, -170, 0.5, -240),
+    Size = UDim2.fromOffset(340, 490),
+    Position = UDim2.new(0.5, -170, 0.5, -245),
     BackgroundColor3 = Color3.fromRGB(18, 23, 35),
     BorderSizePixel = 0,
     Active = true
@@ -124,7 +141,7 @@ create("TextLabel", {
     Size = UDim2.new(1, -52, 1, 0),
     Position = UDim2.fromOffset(12, 0),
     BackgroundTransparency = 1,
-    Text = "EGG FINDER V26.1",
+    Text = "EGG FINDER V26.2",
     Font = Enum.Font.GothamBold,
     TextSize = 17,
     TextColor3 = Color3.fromRGB(115, 220, 255),
@@ -261,19 +278,19 @@ local stats = label(
 
 local results = label(
     "Esperando el primer escaneo...",
-    12, 317, 316, 100, 12
+    12, 317, 316, 103, 12
 )
 
 results.TextYAlignment = Enum.TextYAlignment.Top
 
 local copyButton = button(
     "COPIAR RESUMEN",
-    12, 430, 153, 33
+    12, 439, 153, 33
 )
 
 local restartButton = button(
     "REINICIAR",
-    175, 430, 153, 33,
+    175, 439, 153, 33,
     Color3.fromRGB(95, 65, 130)
 )
 
@@ -285,7 +302,7 @@ end
 
 local function log(message)
     state.lastMessage = tostring(message)
-    print("[EGG FINDER V26.1] " .. tostring(message))
+    print("[EGG FINDER V26.2] " .. tostring(message))
 end
 
 local function updateAuto()
@@ -405,13 +422,12 @@ end
 
 local function eggZone(egg, nests)
     local direct = zoneFromTree(egg)
-
     if direct then return direct end
 
     local pos = getPosition(egg)
     if not pos then return nil end
 
-    local closest = nil
+    local closest
     local distance = math.huge
 
     for _, nest in ipairs(nests) do
@@ -533,7 +549,12 @@ local function inspectEffects(egg)
     }
 end
 
-local alertFrame
+local function dismissAlert()
+    if alertFrame then
+        alertFrame:Destroy()
+        alertFrame = nil
+    end
+end
 
 local function soundAlert()
     pcall(function()
@@ -551,7 +572,7 @@ local function soundAlert()
 end
 
 local function showAlert(candidate)
-    if alertFrame then alertFrame:Destroy() end
+    dismissAlert()
 
     alertFrame = create("Frame", {
         Size = UDim2.new(0.9, 0, 0, 170),
@@ -599,12 +620,7 @@ local function showAlert(candidate)
 
     corner(dismiss, 7)
 
-    connect(dismiss.MouseButton1Click, function()
-        if alertFrame then
-            alertFrame:Destroy()
-            alertFrame = nil
-        end
-    end)
+    connect(dismiss.MouseButton1Click, dismissAlert)
 
     pcall(function()
         StarterGui:SetCore("SendNotification", {
@@ -619,7 +635,11 @@ local function showAlert(candidate)
     end)
 
     for i = 1, 3 do
-        task.delay((i - 1) * 0.7, soundAlert)
+        task.delay((i - 1) * 0.7, function()
+            if state.running and state.found then
+                soundAlert()
+            end
+        end)
     end
 end
 
@@ -627,6 +647,7 @@ local function scan()
     if not state.running
     or state.found
     or state.hopping
+    or state.teleporting
     or state.scanBusy then
         return
     end
@@ -677,6 +698,8 @@ local function scan()
 
                     table.insert(candidates, c)
 
+                    -- CORRECCION:
+                    -- Solo detener si cumple el minimo.
                     if height >= config.minimum
                     and (not best or height > best.height) then
                         best = c
@@ -698,6 +721,7 @@ local function scan()
         )
 
         if best then
+            -- Solo aqui se detiene AUTO HOP.
             state.found = true
             config.autoHop = false
             updateAuto()
@@ -708,16 +732,17 @@ local function scan()
             )
 
             results.Text = string.format(
-                "Zona: %s\nAltura: %.2f studs\n%s",
+                "Zona: %s\nAltura: %.2f studs\n%s\nPulsa AUTO HOP para seguir buscando.",
                 best.zone,
                 best.height,
                 best.rarity
             )
 
             log(string.format(
-                "ENCONTRADO | %s | %.2f studs | %s",
+                "ENCONTRADO | %s | %.2f | Minimo %.2f | %s",
                 best.zone,
                 best.height,
+                config.minimum,
                 best.rarity
             ))
 
@@ -733,11 +758,10 @@ local function scan()
             local largest = candidates[1]
 
             results.Text = string.format(
-                "Mayor candidato: %s\nAltura: %.2f | Minimo: %.2f\nCandidatos: %d",
+                "Mayor candidato: %s\nAltura: %.2f | Minimo: %.2f\nNo cumple el minimo: CONTINUAR",
                 largest.zone,
                 largest.height,
-                config.minimum,
-                #candidates
+                config.minimum
             )
         else
             results.Text =
@@ -746,33 +770,33 @@ local function scan()
 
         if unknown > 0 then
             results.Text = results.Text
-                .. "\nEspeciales sin zona: "
+                .. "\nSin zona: "
                 .. unknown
+                .. " (no bloquean AUTO HOP)"
         end
 
         setStatus(
-            "Escaneando | Minimo "
+            "Buscando | Minimo "
             .. tostring(config.minimum)
         )
 
         log(string.format(
-            "SCAN | Huevos=%d | Candidatos=%d | SinZona=%d",
+            "SCAN | Huevos=%d | Candidatos=%d | SinZona=%d | Minimo=%.2f",
             state.eggCount,
             #candidates,
-            unknown
+            unknown,
+            config.minimum
         ))
     end)
 
     state.scanBusy = false
 
     if not ok then
-        warn("[EGG FINDER] " .. tostring(err))
+        warn("[EGG FINDER V26.2] " .. tostring(err))
         setStatus("Error de escaneo; reintentando")
     end
 end
 
--- Acceso HTTP. Si el executor no permite consultar
--- la API de servidores, se detiene el auto-hop.
 local function getHttp(url)
     local req =
         (syn and syn.request)
@@ -898,7 +922,7 @@ local function saveForNextServer()
     })
 
     local code =
-        "getgenv().EggFinderV261Resume = "
+        "getgenv().EggFinderV262Resume = "
         .. string.format("%q", saved)
         .. "\nloadstring(game:HttpGet("
         .. string.format("%q", LOADER_URL)
@@ -933,9 +957,14 @@ local function attemptHop(force)
 
     local servers, err = availableServers()
 
+    if not state.running then
+        state.hopping = false
+        return
+    end
+
     if not servers then
         state.hopping = false
-        stopAuto("AUTO HOP DETENIDO: " .. tostring(err))
+        stopAuto("AUTO HOP: " .. tostring(err))
         return
     end
 
@@ -949,6 +978,7 @@ local function attemptHop(force)
 
     state.visited[game.JobId] = true
     state.visited[target.id] = true
+    state.targetServer = target.id
 
     local queued = saveForNextServer()
 
@@ -964,17 +994,20 @@ local function attemptHop(force)
         .. " plazas libres"
     )
 
-    log("TELEPORT | " .. target.id
-        .. " | Queue=" .. tostring(queued))
+    log(
+        "TELEPORT | "
+        .. target.id
+        .. " | Queue="
+        .. tostring(queued)
+    )
 
     if not queued then
         results.Text =
-            "ADVERTENCIA: no se pudo preparar\n"
-            .. "el reinicio automatico en Delta.\n"
-            .. "Puede requerir ejecutar el script otra vez."
+            "No se confirmo queue_on_teleport.\n"
+            .. "Puede ser necesario ejecutar V26.2\n"
+            .. "de nuevo despues del cambio."
     end
 
-    -- Se registra el fallo sin bloquear todo el script.
     task.spawn(function()
         local ok, teleportErr = pcall(function()
             TeleportService:TeleportToPlaceInstance(
@@ -989,15 +1022,14 @@ local function attemptHop(force)
         and state.hopToken == token then
             state.failed[target.id] = true
             state.teleporting = false
-            state.nextHopAt = os.clock() + 3
+            state.targetServer = nil
+            state.nextHopAt = os.clock() + config.retryDelay
 
             log("TELEPORT ERROR: " .. tostring(teleportErr))
-            setStatus("Error de servidor; buscando otro")
+            setStatus("Servidor fallido; buscando otro")
         end
     end)
 
-    -- Temporizador local: solo funciona mientras el
-    -- cliente siga ejecutando Luau.
     task.delay(config.maxTeleportWait, function()
         if not state.running
         or state.found
@@ -1008,35 +1040,69 @@ local function attemptHop(force)
 
         state.failed[target.id] = true
         state.teleporting = false
-        state.nextHopAt = os.clock() + 3
+        state.targetServer = nil
+        state.nextHopAt = os.clock() + config.retryDelay
 
-        setStatus("Espera agotada; intentando recuperar")
+        setStatus("Tiempo agotado; buscando otro")
         log("TIMEOUT | " .. target.id)
-
-        -- Si Roblox mantiene una pantalla de cola
-        -- bloqueante, este intento podria no funcionar.
     end)
 end
 
--- Roblox puede avisar cuando un teletransporte
--- no consigue iniciarse.
 connect(TeleportService.TeleportInitFailed, function(
-    failedPlayer, result, message, placeId, options
+    failedPlayer, result, message
 )
     if failedPlayer ~= player then return end
     if not state.running or state.found then return end
 
+    if state.targetServer then
+        state.failed[state.targetServer] = true
+    end
+
     state.hopToken = state.hopToken + 1
     state.teleporting = false
     state.hopping = false
-    state.nextHopAt = os.clock() + 3
+    state.targetServer = nil
+    state.nextHopAt = os.clock() + config.retryDelay
 
-    local reason =
-        tostring(result) .. " | " .. tostring(message)
+    setStatus("Servidor rechazado; buscando otro")
 
-    setStatus("Servidor rechazado; probando otro")
-    log("TeleportInitFailed: " .. reason)
+    log(
+        "TeleportInitFailed | "
+        .. tostring(result)
+        .. " | "
+        .. tostring(message)
+    )
 end)
+
+local function resumeSearch()
+    -- CORRECCION PRINCIPAL:
+    -- Un huevo encontrado no impide reanudar.
+    state.found = false
+    dismissAlert()
+
+    config.autoHop = true
+    updateAuto()
+
+    state.hopToken = state.hopToken + 1
+    state.teleporting = false
+    state.hopping = false
+    state.targetServer = nil
+
+    state.nextHopAt = 0
+
+    setStatus(
+        "AUTO HOP REANUDADO: buscando otro servidor",
+        Color3.fromRGB(100, 230, 180)
+    )
+
+    log("AUTO HOP REANUDADO MANUALMENTE")
+
+    -- No volver a detectar el mismo huevo:
+    -- saltar directamente a otro servidor.
+    task.spawn(function()
+        attemptHop(true)
+    end)
+end
 
 local function stop()
     state.running = false
@@ -1051,8 +1117,8 @@ local function stop()
 end
 
 G.EggFinderStop = stop
+G.EggFinderV262Stop = stop
 
--- Controles.
 connect(minimumInput.FocusLost, function()
     local n = tonumber(minimumInput.Text)
 
@@ -1066,29 +1132,54 @@ connect(minimumInput.FocusLost, function()
 end)
 
 connect(autoButton.MouseButton1Click, function()
-    if state.found then return end
-
-    config.autoHop = not config.autoHop
-    updateAuto()
+    if state.found then
+        resumeSearch()
+        return
+    end
 
     if config.autoHop then
-        state.nextHopAt = os.clock() + 2
+        config.autoHop = false
+        updateAuto()
+        setStatus("AUTO HOP pausado")
+    else
+        config.autoHop = true
+        updateAuto()
+
+        state.nextHopAt = 0
+
+        setStatus("AUTO HOP activado")
+
+        if not state.hopping
+        and not state.teleporting then
+            task.spawn(function()
+                attemptHop(true)
+            end)
+        end
     end
 end)
 
 connect(scanButton.MouseButton1Click, function()
-    task.spawn(scan)
+    if state.found then
+        setStatus(
+            "Huevo encontrado. AUTO HOP para continuar."
+        )
+    else
+        task.spawn(scan)
+    end
 end)
 
 connect(skipButton.MouseButton1Click, function()
-    if state.found then return end
+    if state.found then
+        resumeSearch()
+        return
+    end
 
-    -- Invalida el intento anterior en el script.
-    -- No cancela necesariamente una cola de Roblox.
     state.hopToken = state.hopToken + 1
     state.teleporting = false
     state.hopping = false
-    state.nextHopAt = os.clock() + 2
+    state.targetServer = nil
+
+    state.nextHopAt = 0
 
     task.spawn(function()
         attemptHop(true)
@@ -1103,13 +1194,14 @@ end)
 
 connect(copyButton.MouseButton1Click, function()
     local lines = {
-        "EGG FINDER V26.1",
+        "EGG FINDER V26.2",
         "JobId: " .. tostring(game.JobId),
         "PlaceId: " .. tostring(game.PlaceId),
         "Minimo: " .. tostring(config.minimum),
         "Huevos: " .. tostring(state.eggCount),
         "Servidores: " .. tostring(state.serversChecked),
         "Encontrado: " .. tostring(state.found),
+        "AUTO HOP: " .. tostring(config.autoHop),
         "Sin zona: " .. tostring(state.unknownZones),
         "Ultimo: " .. state.lastMessage
     }
@@ -1142,17 +1234,15 @@ end)
 
 connect(restartButton.MouseButton1Click, function()
     state.found = false
+    state.hopToken = state.hopToken + 1
     state.hopping = false
     state.teleporting = false
-    state.hopToken = state.hopToken + 1
+    state.targetServer = nil
+
+    dismissAlert()
 
     config.autoHop = false
     updateAuto()
-
-    if alertFrame then
-        alertFrame:Destroy()
-        alertFrame = nil
-    end
 
     setStatus("Reiniciado: escaneo manual")
     task.spawn(scan)
@@ -1163,7 +1253,7 @@ connect(closeButton.MouseButton1Click, function()
     gui:Destroy()
 end)
 
--- Arrastrar panel.
+-- Arrastrar panel con mouse o tactil.
 do
     local dragging = false
     local dragStart
@@ -1210,9 +1300,9 @@ do
     end)
 end
 
--- Recuperar datos al entrar en otro servidor.
+-- Recuperar configuracion tras teletransporte.
 do
-    local saved = G.EggFinderV261Resume
+    local saved = G.EggFinderV262Resume
 
     if type(saved) == "string" then
         local ok, data = pcall(function()
@@ -1222,6 +1312,7 @@ do
         if ok and type(data) == "table" then
             config.minimum = tonumber(data.minimum) or 10
             config.autoHop = data.auto == true
+
             state.serversChecked =
                 (tonumber(data.checked) or 1) + 1
 
@@ -1234,7 +1325,7 @@ do
             end
         end
 
-        G.EggFinderV261Resume = nil
+        G.EggFinderV262Resume = nil
     end
 end
 
@@ -1244,7 +1335,7 @@ minimumInput.Text = tostring(config.minimum)
 updatePresets()
 updateAuto()
 
-log("V26.1 iniciado | Minimo=" .. config.minimum)
+log("V26.2 iniciado | Minimo=" .. config.minimum)
 
 -- Bucle principal.
 task.spawn(function()
@@ -1252,8 +1343,13 @@ task.spawn(function()
 
     task.wait(config.loadWait)
 
+    state.loaded = true
+
     while state.running do
-        if not state.found and not state.teleporting then
+        if not state.found
+        and not state.teleporting
+        and not state.hopping then
+
             if os.clock() - state.lastScanAt
                 >= config.scanInterval then
 
@@ -1263,28 +1359,30 @@ task.spawn(function()
 
             if config.autoHop
             and not state.found
+            and not state.teleporting
             and not state.hopping
             and os.clock() >= state.nextHopAt then
 
                 if state.eggCount >= 60 then
-                    if state.unknownZones > 0 then
-                        stopAuto(
-                            "Revision necesaria: zona desconocida"
-                        )
-                    else
-                        state.nextHopAt = os.clock() + 5
+                    -- CORRECCION:
+                    -- No detenerse por candidatos pequenos.
+                    -- No detenerse por zonas desconocidas.
+                    state.nextHopAt = os.clock() + 5
 
-                        task.spawn(function()
-                            attemptHop(false)
-                        end)
-                    end
+                    task.spawn(function()
+                        attemptHop(false)
+                    end)
 
                 elseif os.clock()
                     - state.serverEnteredAt > 35 then
 
-                    -- No abandonar una zona con huevos
-                    -- incompletos: podria estar cargando.
-                    stopAuto(
+                    -- Esperar si el servidor aun carga.
+                    -- Si la carga es incompleta, se pausa
+                    -- para no abandonar un posible huevo.
+                    config.autoHop = false
+                    updateAuto()
+
+                    setStatus(
                         "Carga incompleta: revisar servidor"
                     )
                 end
