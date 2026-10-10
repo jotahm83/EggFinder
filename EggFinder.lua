@@ -1,17 +1,20 @@
 
 --[[
- EGG FINDER V26.2
- Correcciones:
- - Los huevos menores al minimo NO detienen AUTO HOP.
- - Las zonas desconocidas NO desactivan AUTO HOP.
- - AUTO HOP puede reanudarse despues de encontrar un huevo.
- - Al reanudar, busca inmediatamente otro servidor.
- - Maneja fallos y tiempos de espera de teletransporte.
- - Conserva minimo configurable y alerta sonora.
+ EGG FINDER V26.3
+ - Panel compacto
+ - Servidores con menos jugadores
+ - Seleccion aleatoria entre servidores disponibles
+ - Evita repetir servidores fallidos
+ - Intenta gestionar errores Roblox 771 y 279
+ - Continua con huevos menores al minimo
+ - Se detiene solo ante un especial suficientemente grande
+ - AUTO HOP puede reanudarse despues del aviso
 
- NOTA:
- La rareza se estima a partir de efectos visuales.
- No es una lectura garantizada de la rareza real.
+ AVISO:
+ Los efectos visuales permiten estimar candidatos
+ Secret / Eternal / Divine, no verificar su rareza.
+ Los errores de conexion de Roblox no siempre
+ pueden recuperarse desde un script cliente.
 ]]
 
 local G = getgenv()
@@ -19,7 +22,8 @@ local G = getgenv()
 for _, key in ipairs({
     "EggFinderStop",
     "EggFinderV26Stop",
-    "EggFinderV262Stop"
+    "EggFinderV262Stop",
+    "EggFinderV263Stop"
 }) do
     if type(G[key]) == "function" then
         pcall(G[key])
@@ -30,295 +34,283 @@ local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local StarterGui = game:GetService("StarterGui")
-local UserInputService = game:GetService("UserInputService")
+local UIS = game:GetService("UserInputService")
 local SoundService = game:GetService("SoundService")
+local CoreGui = game:GetService("CoreGui")
 
 local player = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
+local pg = player:WaitForChild("PlayerGui")
 
-local LOADER_URL =
+local URL =
     "https://raw.githubusercontent.com/jotahm83/EggFinder/main/EggFinder.lua"
 
-local config = {
+local C = {
     minimum = 10,
-    autoHop = true,
-    scanInterval = 2,
-    loadWait = 12,
-    maxTeleportWait = 20,
-    minimumFreeSlots = 3,
-    serverPages = 5,
+    auto = true,
+    scanEvery = 2,
+    initialWait = 12,
+    teleportTimeout = 20,
+    minFree = 5,
+    pages = 6,
+    candidateLimit = 40,
     retryDelay = 3
 }
 
-local state = {
+local S = {
     running = true,
     found = false,
     hopping = false,
     teleporting = false,
-    hopToken = 0,
-    serversChecked = 1,
+    token = 0,
+    checked = 1,
     visited = {},
     failed = {},
     candidates = {},
     eggCount = 0,
-    unknownZones = 0,
-    lastMessage = "",
+    unknown = 0,
+    last = "",
     scanBusy = false,
-    serverEnteredAt = os.clock(),
-    lastScanAt = 0,
-    nextHopAt = 0,
-    loaded = false,
-    targetServer = nil
+    enteredAt = os.clock(),
+    lastScan = 0,
+    nextHop = 0,
+    target = nil,
+    errorAttempts = {},
+    loaded = false
 }
 
 local connections = {}
-local alertFrame
+local alert
+local requestHop
 
-local function connect(signal, callback)
-    local c = signal:Connect(callback)
+local function bind(signal, fn)
+    local c = signal:Connect(fn)
     table.insert(connections, c)
     return c
 end
 
-local function create(class, properties, parent)
+local function ui(class, props, parent)
     local obj = Instance.new(class)
-
-    for key, value in pairs(properties or {}) do
-        obj[key] = value
+    for k, v in pairs(props or {}) do
+        obj[k] = v
     end
-
     obj.Parent = parent
     return obj
 end
 
-local function corner(parent, radius)
-    create("UICorner", {
-        CornerRadius = UDim.new(0, radius or 8)
-    }, parent)
+local function round(obj, radius)
+    ui("UICorner", {
+        CornerRadius = UDim.new(0, radius or 7)
+    }, obj)
 end
 
 for _, name in ipairs({
     "EggFinderV26",
     "EggFinderV261",
-    "EggFinderV262"
+    "EggFinderV262",
+    "EggFinderV263"
 }) do
-    local old = playerGui:FindFirstChild(name)
+    local old = pg:FindFirstChild(name)
     if old then old:Destroy() end
 end
 
-local gui = create("ScreenGui", {
-    Name = "EggFinderV262",
+local screen = ui("ScreenGui", {
+    Name = "EggFinderV263",
     ResetOnSpawn = false,
     IgnoreGuiInset = true,
     DisplayOrder = 999999
-}, playerGui)
+}, pg)
 
-local panel = create("Frame", {
-    Size = UDim2.fromOffset(340, 490),
-    Position = UDim2.new(0.5, -170, 0.5, -245),
-    BackgroundColor3 = Color3.fromRGB(18, 23, 35),
+-- 260 x 350: aproximadamente 45% menos
+-- superficie que el panel anterior de 340 x 490.
+local panel = ui("Frame", {
+    Size = UDim2.fromOffset(260, 350),
+    Position = UDim2.new(0.5, -130, 0.5, -175),
+    BackgroundColor3 = Color3.fromRGB(19, 24, 36),
     BorderSizePixel = 0,
     Active = true
-}, gui)
+}, screen)
+round(panel, 10)
 
-corner(panel, 12)
-
-create("UIStroke", {
+ui("UIStroke", {
     Color = Color3.fromRGB(55, 125, 190),
-    Thickness = 1.5
+    Thickness = 1.2
 }, panel)
 
-local header = create("Frame", {
-    Size = UDim2.new(1, 0, 0, 44),
-    BackgroundColor3 = Color3.fromRGB(28, 44, 69),
+local header = ui("Frame", {
+    Size = UDim2.new(1, 0, 0, 33),
+    BackgroundColor3 = Color3.fromRGB(29, 44, 70),
     BorderSizePixel = 0,
     Active = true
 }, panel)
+round(header, 10)
 
-corner(header, 12)
-
-create("TextLabel", {
-    Size = UDim2.new(1, -52, 1, 0),
-    Position = UDim2.fromOffset(12, 0),
+ui("TextLabel", {
+    Text = "EGG FINDER V26.3",
+    Position = UDim2.fromOffset(9, 0),
+    Size = UDim2.new(1, -42, 1, 0),
     BackgroundTransparency = 1,
-    Text = "EGG FINDER V26.2",
     Font = Enum.Font.GothamBold,
-    TextSize = 17,
+    TextSize = 13,
     TextColor3 = Color3.fromRGB(115, 220, 255),
     TextXAlignment = Enum.TextXAlignment.Left
 }, header)
 
-local function button(text, x, y, w, h, color)
-    local obj = create("TextButton", {
+local function btn(text, x, y, w, h, color, parent)
+    local b = ui("TextButton", {
         Text = text,
-        Size = UDim2.fromOffset(w, h),
         Position = UDim2.fromOffset(x, y),
-        BackgroundColor3 = color or Color3.fromRGB(43, 77, 115),
+        Size = UDim2.fromOffset(w, h),
+        BackgroundColor3 =
+            color or Color3.fromRGB(45, 77, 115),
         BorderSizePixel = 0,
         TextColor3 = Color3.new(1, 1, 1),
         Font = Enum.Font.GothamBold,
-        TextSize = 12,
+        TextSize = 10,
         AutoButtonColor = true
-    }, panel)
-
-    corner(obj, 7)
-    return obj
+    }, parent or panel)
+    round(b, 6)
+    return b
 end
 
-local closeButton = create("TextButton", {
-    Text = "X",
-    Size = UDim2.fromOffset(30, 30),
-    Position = UDim2.new(1, -37, 0, 7),
-    BackgroundColor3 = Color3.fromRGB(165, 53, 60),
-    TextColor3 = Color3.new(1, 1, 1),
-    Font = Enum.Font.GothamBold,
-    TextSize = 14,
-    BorderSizePixel = 0
-}, header)
+local close = btn(
+    "X", 230, 4, 26, 25,
+    Color3.fromRGB(160, 50, 58), header
+)
 
-corner(closeButton, 7)
-
-local function label(text, x, y, w, h, size, color)
-    return create("TextLabel", {
+local function lbl(text, x, y, w, h, size, color)
+    return ui("TextLabel", {
         Text = text,
         Position = UDim2.fromOffset(x, y),
         Size = UDim2.fromOffset(w, h),
         BackgroundTransparency = 1,
         TextColor3 = color or Color3.new(1, 1, 1),
         Font = Enum.Font.Gotham,
-        TextSize = size or 13,
+        TextSize = size or 11,
         TextWrapped = true,
         TextXAlignment = Enum.TextXAlignment.Left,
         TextYAlignment = Enum.TextYAlignment.Center
     }, panel)
 end
 
-local status = label(
-    "Preparando...", 12, 52, 316, 40,
-    13, Color3.fromRGB(255, 220, 120)
+local status = lbl(
+    "Iniciando...", 9, 39, 242, 31,
+    11, Color3.fromRGB(255, 215, 110)
 )
 
-label(
-    "ALTURA MINIMA (STUDS)",
-    12, 96, 260, 18, 12,
-    Color3.fromRGB(175, 195, 215)
-)
+lbl("MINIMO (STUDS)", 9, 74, 200, 15, 10)
 
 local presets = {6, 8, 10, 12, 15}
 local presetButtons = {}
 
-local minimumInput = create("TextBox", {
-    Position = UDim2.fromOffset(12, 154),
-    Size = UDim2.fromOffset(316, 32),
-    Text = tostring(config.minimum),
-    PlaceholderText = "Tamano personalizado",
+for i, n in ipairs(presets) do
+    presetButtons[i] = btn(
+        tostring(n),
+        9 + (i - 1) * 49,
+        94, 45, 25
+    )
+end
+
+local minimumInput = ui("TextBox", {
+    Position = UDim2.fromOffset(9, 125),
+    Size = UDim2.fromOffset(242, 27),
     BackgroundColor3 = Color3.fromRGB(34, 45, 62),
+    BorderSizePixel = 0,
     TextColor3 = Color3.new(1, 1, 1),
     Font = Enum.Font.GothamBold,
-    TextSize = 15,
+    TextSize = 12,
+    Text = "10",
     ClearTextOnFocus = false,
-    BorderSizePixel = 0
+    PlaceholderText = "Minimo personalizado"
 }, panel)
+round(minimumInput, 6)
 
-corner(minimumInput, 7)
-
-local function updatePresets()
-    for i, b in ipairs(presetButtons) do
-        b.BackgroundColor3 =
-            config.minimum == presets[i]
-            and Color3.fromRGB(32, 145, 105)
-            or Color3.fromRGB(43, 77, 115)
-    end
-end
-
-for i, n in ipairs(presets) do
-    local b = button(
-        tostring(n),
-        12 + (i - 1) * 64,
-        119, 60, 29
-    )
-
-    presetButtons[i] = b
-
-    connect(b.MouseButton1Click, function()
-        config.minimum = n
-        minimumInput.Text = tostring(n)
-        updatePresets()
-    end)
-end
-
-local autoButton = button(
-    "AUTO HOP: SI",
-    12, 196, 153, 33,
+local autoBtn = btn(
+    "AUTO: SI", 9, 161, 116, 27,
     Color3.fromRGB(30, 130, 95)
 )
 
-local scanButton = button(
-    "ESCANEAR",
-    175, 196, 153, 33
+local scanBtn = btn(
+    "ESCANEAR", 135, 161, 116, 27
 )
 
-local skipButton = button(
-    "SALTAR SERVIDOR",
-    12, 238, 153, 33,
-    Color3.fromRGB(105, 80, 145)
+local skipBtn = btn(
+    "SALTAR", 9, 194, 116, 27,
+    Color3.fromRGB(100, 80, 145)
 )
 
-local pauseButton = button(
-    "PAUSAR",
-    175, 238, 153, 33,
-    Color3.fromRGB(135, 95, 40)
+local pauseBtn = btn(
+    "PAUSAR", 135, 194, 116, 27,
+    Color3.fromRGB(130, 90, 40)
 )
 
-local stats = label(
+local stats = lbl(
     "Servidores: 1 | Huevos: 0",
-    12, 283, 316, 30, 12,
-    Color3.fromRGB(180, 220, 255)
+    9, 229, 242, 21,
+    10, Color3.fromRGB(180, 220, 255)
 )
 
-local results = label(
-    "Esperando el primer escaneo...",
-    12, 317, 316, 103, 12
+local results = lbl(
+    "Esperando escaneo...",
+    9, 252, 242, 54, 10
 )
-
 results.TextYAlignment = Enum.TextYAlignment.Top
 
-local copyButton = button(
-    "COPIAR RESUMEN",
-    12, 439, 153, 33
+local copyBtn = btn(
+    "COPIAR", 9, 313, 116, 27
 )
 
-local restartButton = button(
-    "REINICIAR",
-    175, 439, 153, 33,
+local restartBtn = btn(
+    "REINICIAR", 135, 313, 116, 27,
     Color3.fromRGB(95, 65, 130)
 )
 
-local function setStatus(text, color)
+local function statusText(text, color)
     status.Text = text
     status.TextColor3 =
-        color or Color3.fromRGB(255, 220, 120)
+        color or Color3.fromRGB(255, 215, 110)
 end
 
-local function log(message)
-    state.lastMessage = tostring(message)
-    print("[EGG FINDER V26.2] " .. tostring(message))
+local function log(text)
+    S.last = tostring(text)
+    print("[EGG FINDER V26.3] " .. S.last)
 end
 
-local function updateAuto()
-    autoButton.Text =
-        config.autoHop and "AUTO HOP: SI" or "AUTO HOP: NO"
-
-    autoButton.BackgroundColor3 =
-        config.autoHop
+local function refreshAuto()
+    autoBtn.Text = C.auto and "AUTO: SI" or "AUTO: NO"
+    autoBtn.BackgroundColor3 =
+        C.auto
         and Color3.fromRGB(30, 130, 95)
         or Color3.fromRGB(125, 65, 70)
 end
 
-local function normalize(s)
-    return tostring(s or ""):lower():gsub("[^%w]", "")
+local function refreshPresets()
+    for i, b in ipairs(presetButtons) do
+        b.BackgroundColor3 =
+            C.minimum == presets[i]
+            and Color3.fromRGB(30, 145, 105)
+            or Color3.fromRGB(45, 77, 115)
+    end
 end
 
+for i, n in ipairs(presets) do
+    bind(presetButtons[i].MouseButton1Click, function()
+        C.minimum = n
+        minimumInput.Text = tostring(n)
+        refreshPresets()
+    end)
+end
+
+bind(minimumInput.FocusLost, function()
+    local n = tonumber(minimumInput.Text)
+    if n and n > 0 and n <= 1000 then
+        C.minimum = n
+    else
+        minimumInput.Text = tostring(C.minimum)
+    end
+    refreshPresets()
+end)
+
+-- ZONAS
 local zones = {
     {
         name = "Cherry Blossom",
@@ -341,17 +333,19 @@ local zones = {
     }
 }
 
+local function normalize(text)
+    return tostring(text or ""):lower():gsub("[^%w]", "")
+end
+
 local function matchZone(text)
     local n = normalize(text)
-
-    for _, zone in ipairs(zones) do
-        for _, alias in ipairs(zone.aliases) do
+    for _, z in ipairs(zones) do
+        for _, alias in ipairs(z.aliases) do
             if n:find(alias, 1, true) then
-                return zone.name
+                return z.name
             end
         end
     end
-
     return nil
 end
 
@@ -382,7 +376,7 @@ local function zoneFromTree(obj)
     return nil
 end
 
-local function getPosition(obj)
+local function positionOf(obj)
     if obj:IsA("BasePart") then
         return obj.Position
     end
@@ -391,27 +385,25 @@ local function getPosition(obj)
         local ok, cf = pcall(function()
             return obj:GetPivot()
         end)
-
         if ok then return cf.Position end
     end
 
     return nil
 end
 
-local function collectNests()
+local function getNests()
     local world = workspace:FindFirstChild("World")
     local areas = world and world:FindFirstChild("Areas")
     local guards = areas and areas:FindFirstChild("GuardAreas")
-
     local nests = {}
 
     if not guards then return nests end
 
     for _, obj in ipairs(guards:GetDescendants()) do
-        if obj.Name == "EggFitBounds"
-        and obj:IsA("BasePart") then
+        if obj:IsA("BasePart")
+        and obj.Name == "EggFitBounds" then
             table.insert(nests, {
-                position = obj.Position,
+                pos = obj.Position,
                 zone = zoneFromTree(obj)
             })
         end
@@ -420,95 +412,83 @@ local function collectNests()
     return nests
 end
 
-local function eggZone(egg, nests)
+local function getZone(egg, nests)
     local direct = zoneFromTree(egg)
     if direct then return direct end
 
-    local pos = getPosition(egg)
+    local pos = positionOf(egg)
     if not pos then return nil end
 
-    local closest
-    local distance = math.huge
+    local nearest, distance = nil, math.huge
 
     for _, nest in ipairs(nests) do
-        local d = (nest.position - pos).Magnitude
-
+        local d = (nest.pos - pos).Magnitude
         if d < distance then
+            nearest = nest
             distance = d
-            closest = nest
         end
     end
 
-    if closest and distance <= 35 then
-        return closest.zone
+    if nearest and distance <= 35 then
+        return nearest.zone
     end
 
     return nil
 end
 
-local function eggHeight(egg)
-    local low = math.huge
-    local high = -math.huge
-    local parts = 0
+local function getHeight(egg)
+    local low, high = math.huge, -math.huge
+    local count = 0
 
-    for _, obj in ipairs(egg:GetDescendants()) do
-        if obj:IsA("BasePart")
-        and obj.Transparency < 0.98
-        and obj.Size.Magnitude > 0.05 then
+    for _, part in ipairs(egg:GetDescendants()) do
+        if part:IsA("BasePart")
+        and part.Transparency < 0.98
+        and part.Size.Magnitude > 0.05 then
 
-            local cf = obj.CFrame
-            local size = obj.Size
+            local cf = part.CFrame
+            local s = part.Size
 
             local half =
-                math.abs(cf.RightVector.Y) * size.X / 2
-                + math.abs(cf.UpVector.Y) * size.Y / 2
-                + math.abs(cf.LookVector.Y) * size.Z / 2
+                math.abs(cf.RightVector.Y) * s.X / 2
+                + math.abs(cf.UpVector.Y) * s.Y / 2
+                + math.abs(cf.LookVector.Y) * s.Z / 2
 
             low = math.min(low, cf.Position.Y - half)
             high = math.max(high, cf.Position.Y + half)
-            parts = parts + 1
+            count = count + 1
         end
     end
 
-    if parts > 0 then
-        return high - low
-    end
+    if count > 0 then return high - low end
 
     if egg:IsA("Model") then
         local ok, _, size = pcall(function()
             return egg:GetBoundingBox()
         end)
-
         if ok then return size.Y end
     end
 
     return 0
 end
 
-local function inspectEffects(egg)
-    local particles = 0
-    local highlights = 0
-    local beams = 0
-    local trails = 0
-    local lights = 0
-    local rate = 0
-    local pinkOutline = false
+local function effectsOf(egg)
+    local particles, highlights = 0, 0
+    local beams, trails, lights = 0, 0, 0
+    local pink = false
 
     for _, obj in ipairs(egg:GetDescendants()) do
         if obj:IsA("ParticleEmitter") and obj.Enabled then
             particles = particles + 1
-            rate = rate + math.min(obj.Rate, 100)
 
         elseif obj:IsA("Highlight") and obj.Enabled then
             highlights = highlights + 1
 
             local c = obj.OutlineColor
-
             if c.R > 0.65
             and c.B > 0.3
             and c.G < 0.55
             and obj.OutlineTransparency < 0.8 then
-                pinkOutline = true
+                pink = true
             end
 
         elseif obj:IsA("Beam") and obj.Enabled then
@@ -532,95 +512,80 @@ local function inspectEffects(egg)
         or (beams + trails >= 2 and particles >= 1)
         or (lights >= 2 and particles >= 2)
 
-    local score =
-        particles * 2
-        + highlights * 3
-        + beams * 3
-        + trails * 2
-        + lights * 2
-        + math.min(rate / 25, 8)
-
-    return {
-        special = special,
-        score = score,
-        rarity = pinkOutline
-            and "POSIBLE ETERNAL"
-            or "ESPECIAL (SIN CONFIRMAR)"
-    }
+    return special,
+        pink and "POSIBLE ETERNAL"
+        or "ESPECIAL (SIN CONFIRMAR)"
 end
 
 local function dismissAlert()
-    if alertFrame then
-        alertFrame:Destroy()
-        alertFrame = nil
+    if alert then
+        alert:Destroy()
+        alert = nil
     end
 end
 
-local function soundAlert()
+local function playSound()
     pcall(function()
-        local sound = create("Sound", {
+        local sound = ui("Sound", {
             SoundId = "rbxasset://sounds/electronicpingshort.wav",
             Volume = 1.5
         }, SoundService)
 
         sound:Play()
-
         task.delay(4, function()
             if sound then sound:Destroy() end
         end)
     end)
 end
 
-local function showAlert(candidate)
+local function showFound(candidate)
     dismissAlert()
 
-    alertFrame = create("Frame", {
-        Size = UDim2.new(0.9, 0, 0, 170),
+    alert = ui("Frame", {
+        Size = UDim2.new(0.9, 0, 0, 145),
         Position = UDim2.new(0.05, 0, 0.08, 0),
-        BackgroundColor3 = Color3.fromRGB(19, 92, 56),
+        BackgroundColor3 = Color3.fromRGB(20, 95, 55),
         BorderSizePixel = 0,
         ZIndex = 50
-    }, gui)
+    }, screen)
+    round(alert, 10)
 
-    corner(alertFrame, 12)
-
-    create("UIStroke", {
+    ui("UIStroke", {
         Color = Color3.fromRGB(75, 255, 150),
         Thickness = 3
-    }, alertFrame)
+    }, alert)
 
-    create("TextLabel", {
-        Size = UDim2.new(1, -20, 1, -50),
-        Position = UDim2.fromOffset(10, 8),
+    ui("TextLabel", {
+        Size = UDim2.new(1, -16, 1, -42),
+        Position = UDim2.fromOffset(8, 5),
         BackgroundTransparency = 1,
         Text = string.format(
-            "¡HUEVO ENCONTRADO!\n%s\nAltura: %.2f | Minimo: %.2f\n%s\nBUSQUEDA DETENIDA",
+            "¡HUEVO ENCONTRADO!\n%s\n%.2f studs | Minimo %.2f\n%s\nAUTO HOP DETENIDO",
             candidate.zone,
             candidate.height,
-            config.minimum,
+            C.minimum,
             candidate.rarity
         ),
-        TextColor3 = Color3.new(1, 1, 1),
         Font = Enum.Font.GothamBold,
-        TextSize = 16,
+        TextSize = 15,
         TextWrapped = true,
+        TextColor3 = Color3.new(1, 1, 1),
         ZIndex = 51
-    }, alertFrame)
+    }, alert)
 
-    local dismiss = create("TextButton", {
-        Size = UDim2.new(1, -20, 0, 30),
-        Position = UDim2.new(0, 10, 1, -36),
-        BackgroundColor3 = Color3.fromRGB(40, 140, 85),
+    local dismiss = ui("TextButton", {
+        Size = UDim2.new(1, -16, 0, 28),
+        Position = UDim2.new(0, 8, 1, -34),
         Text = "CERRAR AVISO",
+        BackgroundColor3 = Color3.fromRGB(45, 145, 85),
         TextColor3 = Color3.new(1, 1, 1),
         Font = Enum.Font.GothamBold,
-        TextSize = 12,
+        TextSize = 11,
         ZIndex = 51
-    }, alertFrame)
+    }, alert)
+    round(dismiss, 6)
 
-    corner(dismiss, 7)
-
-    connect(dismiss.MouseButton1Click, dismissAlert)
+    bind(dismiss.MouseButton1Click, dismissAlert)
 
     pcall(function()
         StarterGui:SetCore("SendNotification", {
@@ -636,71 +601,65 @@ local function showAlert(candidate)
 
     for i = 1, 3 do
         task.delay((i - 1) * 0.7, function()
-            if state.running and state.found then
-                soundAlert()
+            if S.running and S.found then
+                playSound()
             end
         end)
     end
 end
 
 local function scan()
-    if not state.running
-    or state.found
-    or state.hopping
-    or state.teleporting
-    or state.scanBusy then
+    if not S.running or S.found
+    or S.hopping or S.teleporting
+    or S.scanBusy then
         return
     end
 
-    state.scanBusy = true
+    S.scanBusy = true
 
     local ok, err = pcall(function()
         local folder =
             workspace:FindFirstChild("AreaEggSlotsClient")
 
         if not folder then
-            state.eggCount = 0
-            setStatus("Esperando carpeta de huevos...")
+            S.eggCount = 0
             return
         end
 
         local eggs = {}
 
-        for _, obj in ipairs(folder:GetChildren()) do
-            if obj:IsA("Model")
-            or obj:IsA("BasePart") then
-                table.insert(eggs, obj)
+        for _, egg in ipairs(folder:GetChildren()) do
+            if egg:IsA("Model")
+            or egg:IsA("BasePart") then
+                table.insert(eggs, egg)
             end
         end
 
-        state.eggCount = #eggs
+        S.eggCount = #eggs
 
-        local nests = collectNests()
+        local nests = getNests()
         local candidates = {}
         local unknown = 0
-        local best = nil
+        local best
 
         for _, egg in ipairs(eggs) do
-            local effects = inspectEffects(egg)
+            local special, rarity = effectsOf(egg)
 
-            if effects.special then
-                local zone = eggZone(egg, nests)
+            if special then
+                local zone = getZone(egg, nests)
 
                 if zone then
-                    local height = eggHeight(egg)
+                    local height = getHeight(egg)
 
                     local c = {
                         zone = zone,
                         height = height,
-                        rarity = effects.rarity,
-                        score = effects.score
+                        rarity = rarity
                     }
 
                     table.insert(candidates, c)
 
-                    -- CORRECCION:
-                    -- Solo detener si cumple el minimo.
-                    if height >= config.minimum
+                    if height >= C.minimum
                     and (not best or height > best.height) then
                         best = c
                     end
@@ -710,43 +669,39 @@ local function scan()
             end
         end
 
-        state.candidates = candidates
-        state.unknownZones = unknown
+        S.candidates = candidates
+        S.unknown = unknown
 
         stats.Text = string.format(
-            "Servidores: %d | Huevos: %d | Candidatos: %d",
-            state.serversChecked,
-            state.eggCount,
+            "Servidores: %d | Huevos: %d | Esp.: %d",
+            S.checked,
+            S.eggCount,
             #candidates
         )
 
         if best then
-            -- Solo aqui se detiene AUTO HOP.
-            state.found = true
-            config.autoHop = false
-            updateAuto()
+            S.found = true
+            C.auto = false
+            refreshAuto()
 
-            setStatus(
-                "¡HUEVO ENCONTRADO! NO CAMBIAR",
+            statusText(
+                "¡HUEVO ENCONTRADO!",
                 Color3.fromRGB(80, 255, 150)
             )
 
             results.Text = string.format(
-                "Zona: %s\nAltura: %.2f studs\n%s\nPulsa AUTO HOP para seguir buscando.",
+                "%s\n%.2f studs | %s",
                 best.zone,
                 best.height,
                 best.rarity
             )
 
-            log(string.format(
-                "ENCONTRADO | %s | %.2f | Minimo %.2f | %s",
-                best.zone,
-                best.height,
-                config.minimum,
-                best.rarity
-            ))
+            log("ENCONTRADO | "
+                .. best.zone
+                .. " | "
+                .. best.height)
 
-            showAlert(best)
+            showFound(best)
             return
         end
 
@@ -755,55 +710,50 @@ local function scan()
         end)
 
         if #candidates > 0 then
-            local largest = candidates[1]
+            local c = candidates[1]
 
             results.Text = string.format(
-                "Mayor candidato: %s\nAltura: %.2f | Minimo: %.2f\nNo cumple el minimo: CONTINUAR",
-                largest.zone,
-                largest.height,
-                config.minimum
+                "Mayor: %s\n%.2f / %.2f studs\nNo cumple: continuar",
+                c.zone,
+                c.height,
+                C.minimum
             )
         else
             results.Text =
-                "Sin candidatos especiales en las 4 zonas."
+                "Sin especiales validos.\nContinuar buscando..."
         end
 
         if unknown > 0 then
             results.Text = results.Text
-                .. "\nSin zona: "
-                .. unknown
-                .. " (no bloquean AUTO HOP)"
+                .. "\nSin zona: " .. unknown
         end
 
-        setStatus(
-            "Buscando | Minimo "
-            .. tostring(config.minimum)
+        statusText(
+            "Buscando | Minimo " .. C.minimum
         )
 
         log(string.format(
-            "SCAN | Huevos=%d | Candidatos=%d | SinZona=%d | Minimo=%.2f",
-            state.eggCount,
-            #candidates,
-            unknown,
-            config.minimum
+            "SCAN | Huevos=%d | Especiales=%d | SinZona=%d",
+            S.eggCount, #candidates, unknown
         ))
     end)
 
-    state.scanBusy = false
+    S.scanBusy = false
 
     if not ok then
-        warn("[EGG FINDER V26.2] " .. tostring(err))
-        setStatus("Error de escaneo; reintentando")
+        warn("[EGG FINDER V26.3] " .. tostring(err))
+        statusText("Error de escaneo")
     end
 end
 
-local function getHttp(url)
+-- HTTP
+local function httpGet(url)
     local req =
         (syn and syn.request)
         or http_request
         or request
 
-    if req then
+    if type(req) == "function" then
         local ok, response = pcall(function()
             return req({
                 Url = url,
@@ -829,11 +779,14 @@ local function getHttp(url)
     return nil
 end
 
-local function availableServers()
-    local foundServers = {}
+-- Buscar servidores poco poblados.
+-- Asc solicita primero los menos ocupados.
+-- Se elige al azar entre candidatos validos.
+local function findServers()
+    local pool = {}
     local cursor = nil
 
-    for page = 1, config.serverPages do
+    for page = 1, C.pages do
         local url =
             "https://games.roblox.com/v1/games/"
             .. tostring(game.PlaceId)
@@ -845,8 +798,7 @@ local function availableServers()
                 .. HttpService:UrlEncode(cursor)
         end
 
-        local body = getHttp(url)
-
+        local body = httpGet(url)
         if not body then
             return nil, "API de servidores inaccesible"
         end
@@ -856,7 +808,7 @@ local function availableServers()
         end)
 
         if not ok or type(data) ~= "table" then
-            return nil, "Respuesta de servidores invalida"
+            return nil, "Lista de servidores invalida"
         end
 
         for _, server in ipairs(data.data or {}) do
@@ -866,31 +818,40 @@ local function availableServers()
 
             if server.id
             and server.id ~= game.JobId
-            and not state.visited[server.id]
-            and not state.failed[server.id]
-            and free >= config.minimumFreeSlots then
-                table.insert(foundServers, {
+            and not S.visited[server.id]
+            and not S.failed[server.id]
+            and free >= C.minFree then
+                table.insert(pool, {
                     id = server.id,
-                    free = free
+                    free = free,
+                    playing = server.playing or 0
                 })
             end
         end
 
         cursor = data.nextPageCursor
 
-        if not cursor or #foundServers >= 25 then
+        if not cursor or #pool >= C.candidateLimit then
             break
         end
     end
 
-    table.sort(foundServers, function(a, b)
-        return a.free > b.free
+    table.sort(pool, function(a, b)
+        return a.playing < b.playing
     end)
 
-    return foundServers
+    -- Seleccion aleatoria entre los menos ocupados.
+    local top = math.min(#pool, C.candidateLimit)
+    local choices = {}
+
+    for i = 1, top do
+        table.insert(choices, pool[i])
+    end
+
+    return choices
 end
 
-local function saveForNextServer()
+local function queueNext()
     local queue =
         queue_on_teleport
         or (syn and syn.queue_on_teleport)
@@ -900,32 +861,32 @@ local function saveForNextServer()
         return false
     end
 
-    local ids = {}
-    local failedIds = {}
+    local visited = {}
+    local failed = {}
 
-    for id in pairs(state.visited) do
-        table.insert(ids, id)
-        if #ids >= 120 then break end
+    for id in pairs(S.visited) do
+        table.insert(visited, id)
+        if #visited >= 120 then break end
     end
 
-    for id in pairs(state.failed) do
-        table.insert(failedIds, id)
-        if #failedIds >= 80 then break end
+    for id in pairs(S.failed) do
+        table.insert(failed, id)
+        if #failed >= 80 then break end
     end
 
-    local saved = HttpService:JSONEncode({
-        minimum = config.minimum,
-        auto = config.autoHop,
-        checked = state.serversChecked,
-        visited = ids,
-        failed = failedIds
+    local data = HttpService:JSONEncode({
+        minimum = C.minimum,
+        auto = C.auto,
+        checked = S.checked,
+        visited = visited,
+        failed = failed
     })
 
     local code =
-        "getgenv().EggFinderV262Resume = "
-        .. string.format("%q", saved)
+        "getgenv().EggFinderV263Resume="
+        .. string.format("%q", data)
         .. "\nloadstring(game:HttpGet("
-        .. string.format("%q", LOADER_URL)
+        .. string.format("%q", URL)
         .. "))()"
 
     return pcall(function()
@@ -933,83 +894,88 @@ local function saveForNextServer()
     end)
 end
 
-local function stopAuto(reason)
-    config.autoHop = false
-    updateAuto()
-    setStatus(reason)
-    log(reason)
+local function markFailed(reason)
+    if S.target then
+        S.failed[S.target] = true
+    end
+
+    S.token = S.token + 1
+    S.teleporting = false
+    S.hopping = false
+    S.target = nil
+    S.nextHop = os.clock() + C.retryDelay
+
+    statusText("Servidor fallido; siguiente...")
+    log("SERVIDOR FALLIDO | " .. tostring(reason))
 end
 
-local function attemptHop(force)
-    if not state.running
-    or state.found
-    or state.hopping
-    or state.teleporting then
+requestHop = function(force)
+    if not S.running
+    or S.found
+    or S.hopping
+    or S.teleporting then
         return
     end
 
-    if not force and not config.autoHop then
+    if not force and not C.auto then
         return
     end
 
-    state.hopping = true
-    setStatus("Buscando servidor disponible...")
+    S.hopping = true
+    statusText("Buscando servidor con pocos jugadores...")
 
-    local servers, err = availableServers()
+    local servers, err = findServers()
 
-    if not state.running then
-        state.hopping = false
+    if not S.running then
+        S.hopping = false
         return
     end
 
     if not servers then
-        state.hopping = false
-        stopAuto("AUTO HOP: " .. tostring(err))
+        S.hopping = false
+        C.auto = false
+        refreshAuto()
+        statusText(tostring(err))
         return
     end
 
     if #servers == 0 then
-        state.hopping = false
-        stopAuto("No hay servidores nuevos disponibles")
+        S.hopping = false
+        C.auto = false
+        refreshAuto()
+        statusText("Sin servidores nuevos disponibles")
         return
     end
 
-    local target = servers[1]
+    local target = servers[math.random(1, #servers)]
 
-    state.visited[game.JobId] = true
-    state.visited[target.id] = true
-    state.targetServer = target.id
+    S.visited[game.JobId] = true
+    S.visited[target.id] = true
+    S.target = target.id
 
-    local queued = saveForNextServer()
+    local queued = queueNext()
 
-    state.hopToken = state.hopToken + 1
-    local token = state.hopToken
+    S.token = S.token + 1
+    local token = S.token
 
-    state.hopping = false
-    state.teleporting = true
+    S.hopping = false
+    S.teleporting = true
 
-    setStatus(
-        "Entrando a servidor | "
-        .. tostring(target.free)
-        .. " plazas libres"
+    statusText(
+        "Entrando | "
+        .. target.playing
+        .. " jugadores | "
+        .. target.free
+        .. " libres"
     )
 
-    log(
-        "TELEPORT | "
+    log("TELEPORT | "
         .. target.id
         .. " | Queue="
-        .. tostring(queued)
-    )
-
-    if not queued then
-        results.Text =
-            "No se confirmo queue_on_teleport.\n"
-            .. "Puede ser necesario ejecutar V26.2\n"
-            .. "de nuevo despues del cambio."
-    end
+        .. tostring(queued))
 
     task.spawn(function()
-        local ok, teleportErr = pcall(function()
+        local ok, errorText = pcall(function()
             TeleportService:TeleportToPlaceInstance(
                 game.PlaceId,
                 target.id,
@@ -1018,96 +984,265 @@ local function attemptHop(force)
         end)
 
         if not ok
-        and state.running
-        and state.hopToken == token then
-            state.failed[target.id] = true
-            state.teleporting = false
-            state.targetServer = nil
-            state.nextHopAt = os.clock() + config.retryDelay
-
-            log("TELEPORT ERROR: " .. tostring(teleportErr))
-            setStatus("Servidor fallido; buscando otro")
+        and S.running
+        and S.token == token then
+            markFailed(errorText)
         end
     end)
 
-    task.delay(config.maxTeleportWait, function()
-        if not state.running
-        or state.found
-        or state.hopToken ~= token
-        or not state.teleporting then
-            return
+    task.delay(C.teleportTimeout, function()
+        if S.running
+        and not S.found
+        and S.token == token
+        and S.teleporting then
+            markFailed("TIMEOUT 20s")
         end
-
-        state.failed[target.id] = true
-        state.teleporting = false
-        state.targetServer = nil
-        state.nextHopAt = os.clock() + config.retryDelay
-
-        setStatus("Tiempo agotado; buscando otro")
-        log("TIMEOUT | " .. target.id)
     end)
 end
 
-connect(TeleportService.TeleportInitFailed, function(
+-- Evento oficial de error de teletransporte.
+bind(TeleportService.TeleportInitFailed, function(
     failedPlayer, result, message
 )
     if failedPlayer ~= player then return end
-    if not state.running or state.found then return end
+    if not S.running or S.found then return end
 
-    if state.targetServer then
-        state.failed[state.targetServer] = true
-    end
-
-    state.hopToken = state.hopToken + 1
-    state.teleporting = false
-    state.hopping = false
-    state.targetServer = nil
-    state.nextHopAt = os.clock() + config.retryDelay
-
-    setStatus("Servidor rechazado; buscando otro")
-
-    log(
-        "TeleportInitFailed | "
-        .. tostring(result)
-        .. " | "
-        .. tostring(message)
+    markFailed(
+        tostring(result) .. " | " .. tostring(message)
     )
 end)
 
-local function resumeSearch()
-    -- CORRECCION PRINCIPAL:
-    -- Un huevo encontrado no impide reanudar.
-    state.found = false
+-- Intento limitado de cerrar dialogos de error
+-- de Roblox. No busca botones fuera de CoreGui.
+-- Activate() puede no ser suficiente en algunos
+-- clientes; no se garantiza su funcionamiento.
+local function tryHandleRobloxError()
+    if not S.running or S.found then return end
+
+    local ok, root = pcall(function()
+        return CoreGui:FindFirstChild("RobloxGui")
+    end)
+
+    if not ok or not root then return end
+
+    local errorContainers = {}
+
+    for _, obj in ipairs(root:GetDescendants()) do
+        if obj:IsA("GuiObject")
+        and (
+            obj.Name == "ErrorPrompt"
+            or obj.Name == "ErrorFrame"
+        ) then
+            table.insert(errorContainers, obj)
+        end
+    end
+
+    for _, container in ipairs(errorContainers) do
+        if not container.Visible then continue end
+
+        local texts = {}
+        local buttons = {}
+
+        for _, obj in ipairs(container:GetDescendants()) do
+            if obj:IsA("TextLabel") then
+                table.insert(texts, obj.Text)
+            elseif obj:IsA("TextButton") then
+                table.insert(buttons, obj)
+                table.insert(texts, obj.Text)
+            end
+        end
+
+        local content = table.concat(texts, " "):lower()
+
+        local is771 =
+            content:find("771", 1, true) ~= nil
+
+        local is279 =
+            content:find("279", 1, true) ~= nil
+
+        if not is771 and not is279 then
+            continue
+        end
+
+        local key = is771 and "771" or "279"
+        local now = os.clock()
+
+        if now - (S.errorAttempts[key] or 0) < 6 then
+            continue
+        end
+
+        S.errorAttempts[key] = now
+
+        log("VENTANA ROBLOX | ERROR " .. key)
+
+        -- Solo botones del propio dialogo de error.
+        -- Preferimos Aceptar o Cancelar, no Reintentar,
+        -- porque Reintentar podria repetir el mismo
+        -- servidor que acaba de fallar.
+        local chosen
+
+        for _, b in ipairs(buttons) do
+            local t = normalize(b.Text)
+
+            if t == "aceptar"
+            or t == "cancelar"
+            or t == "ok"
+            or t == "close" then
+                chosen = b
+                break
+            end
+        end
+
+        if chosen then
+            pcall(function()
+                chosen:Activate()
+            end)
+        end
+
+        -- Aunque la ventana siga visible, registrar
+        -- el servidor fallido para no repetirlo.
+        if S.target then
+            markFailed("ROBLOX " .. key)
+        end
+    end
+end
+
+-- Reanudar despues de encontrar un huevo.
+local function resume()
+    S.found = false
     dismissAlert()
 
-    config.autoHop = true
-    updateAuto()
+    C.auto = true
+    refreshAuto()
 
-    state.hopToken = state.hopToken + 1
-    state.teleporting = false
-    state.hopping = false
-    state.targetServer = nil
+    S.token = S.token + 1
+    S.hopping = false
+    S.teleporting = false
+    S.target = nil
+    S.nextHop = 0
 
-    state.nextHopAt = 0
-
-    setStatus(
-        "AUTO HOP REANUDADO: buscando otro servidor",
-        Color3.fromRGB(100, 230, 180)
+    statusText(
+        "AUTO REANUDADO",
+        Color3.fromRGB(90, 235, 165)
     )
 
-    log("AUTO HOP REANUDADO MANUALMENTE")
-
-    -- No volver a detectar el mismo huevo:
-    -- saltar directamente a otro servidor.
     task.spawn(function()
-        attemptHop(true)
+        requestHop(true)
     end)
 end
 
+bind(autoBtn.MouseButton1Click, function()
+    if S.found then
+        resume()
+        return
+    end
+
+    C.auto = not C.auto
+    refreshAuto()
+
+    if C.auto then
+        S.nextHop = 0
+        statusText("AUTO ACTIVADO")
+
+        if not S.teleporting then
+            task.spawn(function()
+                requestHop(true)
+            end)
+        end
+    else
+        statusText("AUTO PAUSADO")
+    end
+end)
+
+bind(scanBtn.MouseButton1Click, function()
+    if not S.found then
+        task.spawn(scan)
+    end
+end)
+
+bind(skipBtn.MouseButton1Click, function()
+    if S.found then
+        resume()
+        return
+    end
+
+    if S.target then
+        S.failed[S.target] = true
+    end
+
+    S.token = S.token + 1
+    S.teleporting = false
+    S.hopping = false
+    S.target = nil
+
+    task.spawn(function()
+        requestHop(true)
+    end)
+end)
+
+bind(pauseBtn.MouseButton1Click, function()
+    C.auto = false
+    refreshAuto()
+    statusText("BUSQUEDA PAUSADA")
+end)
+
+bind(copyBtn.MouseButton1Click, function()
+    local lines = {
+        "EGG FINDER V26.3",
+        "JobId: " .. game.JobId,
+        "PlaceId: " .. game.PlaceId,
+        "Minimo: " .. C.minimum,
+        "Auto: " .. tostring(C.auto),
+        "Huevos: " .. S.eggCount,
+        "Servidores: " .. S.checked,
+        "Encontrado: " .. tostring(S.found),
+        "Sin zona: " .. S.unknown,
+        "Ultimo: " .. S.last
+    }
+
+    for _, c in ipairs(S.candidates) do
+        table.insert(lines, string.format(
+            "%s | %.2f | %s",
+            c.zone, c.height, c.rarity
+        ))
+    end
+
+    local clipboard = setclipboard or toclipboard
+
+    if type(clipboard) == "function" then
+        local ok = pcall(function()
+            clipboard(table.concat(lines, "\n"))
+        end)
+
+        statusText(
+            ok and "RESUMEN COPIADO"
+            or "ERROR AL COPIAR"
+        )
+    else
+        statusText("SIN PORTAPAPELES")
+    end
+end)
+
+bind(restartBtn.MouseButton1Click, function()
+    S.found = false
+    S.token = S.token + 1
+    S.hopping = false
+    S.teleporting = false
+    S.target = nil
+
+    dismissAlert()
+
+    C.auto = false
+    refreshAuto()
+
+    statusText("REINICIADO")
+    task.spawn(scan)
+end)
+
 local function stop()
-    state.running = false
-    config.autoHop = false
-    state.hopToken = state.hopToken + 1
+    S.running = false
+    C.auto = false
+    S.token = S.token + 1
 
     for _, c in ipairs(connections) do
         pcall(function()
@@ -1117,169 +1252,38 @@ local function stop()
 end
 
 G.EggFinderStop = stop
-G.EggFinderV262Stop = stop
+G.EggFinderV263Stop = stop
 
-connect(minimumInput.FocusLost, function()
-    local n = tonumber(minimumInput.Text)
-
-    if n and n > 0 and n <= 1000 then
-        config.minimum = n
-    else
-        minimumInput.Text = tostring(config.minimum)
-    end
-
-    updatePresets()
-end)
-
-connect(autoButton.MouseButton1Click, function()
-    if state.found then
-        resumeSearch()
-        return
-    end
-
-    if config.autoHop then
-        config.autoHop = false
-        updateAuto()
-        setStatus("AUTO HOP pausado")
-    else
-        config.autoHop = true
-        updateAuto()
-
-        state.nextHopAt = 0
-
-        setStatus("AUTO HOP activado")
-
-        if not state.hopping
-        and not state.teleporting then
-            task.spawn(function()
-                attemptHop(true)
-            end)
-        end
-    end
-end)
-
-connect(scanButton.MouseButton1Click, function()
-    if state.found then
-        setStatus(
-            "Huevo encontrado. AUTO HOP para continuar."
-        )
-    else
-        task.spawn(scan)
-    end
-end)
-
-connect(skipButton.MouseButton1Click, function()
-    if state.found then
-        resumeSearch()
-        return
-    end
-
-    state.hopToken = state.hopToken + 1
-    state.teleporting = false
-    state.hopping = false
-    state.targetServer = nil
-
-    state.nextHopAt = 0
-
-    task.spawn(function()
-        attemptHop(true)
-    end)
-end)
-
-connect(pauseButton.MouseButton1Click, function()
-    config.autoHop = false
-    updateAuto()
-    setStatus("Busqueda automatica pausada")
-end)
-
-connect(copyButton.MouseButton1Click, function()
-    local lines = {
-        "EGG FINDER V26.2",
-        "JobId: " .. tostring(game.JobId),
-        "PlaceId: " .. tostring(game.PlaceId),
-        "Minimo: " .. tostring(config.minimum),
-        "Huevos: " .. tostring(state.eggCount),
-        "Servidores: " .. tostring(state.serversChecked),
-        "Encontrado: " .. tostring(state.found),
-        "AUTO HOP: " .. tostring(config.autoHop),
-        "Sin zona: " .. tostring(state.unknownZones),
-        "Ultimo: " .. state.lastMessage
-    }
-
-    for _, c in ipairs(state.candidates) do
-        table.insert(lines, string.format(
-            "%s | %.2f | %s | Score %.1f",
-            c.zone,
-            c.height,
-            c.rarity,
-            c.score
-        ))
-    end
-
-    local clipboard = setclipboard or toclipboard
-
-    if clipboard then
-        local ok = pcall(function()
-            clipboard(table.concat(lines, "\n"))
-        end)
-
-        setStatus(
-            ok and "Resumen enviado al portapapeles"
-            or "Error al copiar"
-        )
-    else
-        setStatus("Portapapeles no disponible")
-    end
-end)
-
-connect(restartButton.MouseButton1Click, function()
-    state.found = false
-    state.hopToken = state.hopToken + 1
-    state.hopping = false
-    state.teleporting = false
-    state.targetServer = nil
-
-    dismissAlert()
-
-    config.autoHop = false
-    updateAuto()
-
-    setStatus("Reiniciado: escaneo manual")
-    task.spawn(scan)
-end)
-
-connect(closeButton.MouseButton1Click, function()
+bind(close.MouseButton1Click, function()
     stop()
-    gui:Destroy()
+    screen:Destroy()
 end)
 
--- Arrastrar panel con mouse o tactil.
+-- Arrastrar panel.
 do
     local dragging = false
     local dragStart
     local startPos
-    local activeInput
+    local active
 
-    connect(header.InputBegan, function(input)
+    bind(header.InputBegan, function(input)
         if input.UserInputType ==
             Enum.UserInputType.MouseButton1
         or input.UserInputType ==
             Enum.UserInputType.Touch then
-
             dragging = true
             dragStart = input.Position
             startPos = panel.Position
-            activeInput = input
+            active = input
         end
     end)
 
-    connect(UserInputService.InputChanged, function(input)
+    bind(UIS.InputChanged, function(input)
         if not dragging then return end
 
         if input.UserInputType ==
             Enum.UserInputType.MouseMovement
-        or input == activeInput then
-
+        or input == active then
             local delta = input.Position - dragStart
 
             panel.Position = UDim2.new(
@@ -1291,8 +1295,8 @@ do
         end
     end)
 
-    connect(UserInputService.InputEnded, function(input)
-        if input == activeInput
+    bind(UIS.InputEnded, function(input)
+        if input == active
         or input.UserInputType ==
             Enum.UserInputType.MouseButton1 then
             dragging = false
@@ -1300,9 +1304,9 @@ do
     end)
 end
 
--- Recuperar configuracion tras teletransporte.
+-- Recuperar configuracion entre servidores.
 do
-    local saved = G.EggFinderV262Resume
+    local saved = G.EggFinderV263Resume
 
     if type(saved) == "string" then
         local ok, data = pcall(function()
@@ -1310,81 +1314,75 @@ do
         end)
 
         if ok and type(data) == "table" then
-            config.minimum = tonumber(data.minimum) or 10
-            config.autoHop = data.auto == true
-
-            state.serversChecked =
-                (tonumber(data.checked) or 1) + 1
+            C.minimum = tonumber(data.minimum) or 10
+            C.auto = data.auto == true
+            S.checked = (tonumber(data.checked) or 1) + 1
 
             for _, id in ipairs(data.visited or {}) do
-                state.visited[id] = true
+                S.visited[id] = true
             end
 
             for _, id in ipairs(data.failed or {}) do
-                state.failed[id] = true
+                S.failed[id] = true
             end
         end
 
-        G.EggFinderV262Resume = nil
+        G.EggFinderV263Resume = nil
     end
 end
 
-state.visited[game.JobId] = true
+S.visited[game.JobId] = true
 
-minimumInput.Text = tostring(config.minimum)
-updatePresets()
-updateAuto()
+minimumInput.Text = tostring(C.minimum)
+refreshPresets()
+refreshAuto()
 
-log("V26.2 iniciado | Minimo=" .. config.minimum)
+log("V26.3 INICIADO | Minimo=" .. C.minimum)
+
+-- Supervisor de ventanas de error.
+task.spawn(function()
+    while S.running do
+        pcall(tryHandleRobloxError)
+        task.wait(2)
+    end
+end)
 
 -- Bucle principal.
 task.spawn(function()
-    setStatus("Esperando carga de huevos...")
+    statusText("Cargando huevos...")
 
-    task.wait(config.loadWait)
+    task.wait(C.initialWait)
+    S.loaded = true
 
-    state.loaded = true
+    while S.running do
+        if not S.found
+        and not S.hopping
+        and not S.teleporting then
 
-    while state.running do
-        if not state.found
-        and not state.teleporting
-        and not state.hopping then
-
-            if os.clock() - state.lastScanAt
-                >= config.scanInterval then
-
+            if os.clock() - S.lastScan >= C.scanEvery then
                 scan()
-                state.lastScanAt = os.clock()
+                S.lastScan = os.clock()
             end
 
-            if config.autoHop
-            and not state.found
-            and not state.teleporting
-            and not state.hopping
-            and os.clock() >= state.nextHopAt then
+            if C.auto
+            and not S.found
+            and not S.hopping
+            and not S.teleporting
+            and os.clock() >= S.nextHop then
 
-                if state.eggCount >= 60 then
-                    -- CORRECCION:
-                    -- No detenerse por candidatos pequenos.
-                    -- No detenerse por zonas desconocidas.
-                    state.nextHopAt = os.clock() + 5
+                if S.eggCount >= 60 then
+                    S.nextHop = os.clock() + 5
 
                     task.spawn(function()
-                        attemptHop(false)
+                        requestHop(false)
                     end)
 
-                elseif os.clock()
-                    - state.serverEnteredAt > 35 then
-
-                    -- Esperar si el servidor aun carga.
-                    -- Si la carga es incompleta, se pausa
-                    -- para no abandonar un posible huevo.
-                    config.autoHop = false
-                    updateAuto()
-
-                    setStatus(
-                        "Carga incompleta: revisar servidor"
-                    )
+                elseif os.clock() - S.enteredAt > 35 then
+                    -- Si la carpeta no termina de cargar,
+                    -- pausar para no perder un huevo.
+                    C.auto = false
+                    refreshAuto()
+                    statusText("CARGA INCOMPLETA")
                 end
             end
         end
