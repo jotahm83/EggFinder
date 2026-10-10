@@ -1,38 +1,40 @@
 
 --[[
- EGG FINDER V26.4
+ EGG FINDER V26.5
  ROBLOX - ROBA UN HUEVO
 
- MEJORAS:
- 1. Deteccion de carga inteligente.
- 2. Sin espera fija de 12 segundos.
- 3. Sin teletransportes simultaneos.
- 4. Reintentos con espera progresiva.
- 5. Servidores aleatorios poco poblados.
- 6. Historial de servidores fallidos.
- 7. Panel compacto y arrastrable.
- 8. Boton AUTO reanudable.
- 9. Conserva deteccion de especiales.
- 10. Alerta al encontrar el tamano minimo.
+ OPTIMIZACIONES:
+ - Cache de servidores
+ - Carga inteligente
+ - Escaneo por cambios
+ - Revision periodica de respaldo
+ - Un teletransporte activo como maximo
+ - Reintentos con espera progresiva
+ - Historial de fallos
+ - Record de huevo especial
+ - Panel compacto y arrastrable
+ - AUTO HOP reanudable
 
- LIMITACIONES:
- La rareza se estima por efectos visuales.
- Un timeout no cancela una operacion de Roblox.
- Los errores de conexion pueden requerir
- intervencion manual si Roblox deja de responder.
+ IMPORTANTE:
+ - La rareza es estimada mediante efectos.
+ - No puede consultar huevos de otros
+   servidores sin entrar en ellos.
+ - No puede cancelar teletransportes internos
+   ni garantizar que Roblox cierre errores.
 ]]
 
 local G = getgenv()
 
-for _, key in ipairs({
+for _, name in ipairs({
     "EggFinderStop",
     "EggFinderV26Stop",
     "EggFinderV262Stop",
     "EggFinderV263Stop",
-    "EggFinderV264Stop"
+    "EggFinderV264Stop",
+    "EggFinderV265Stop"
 }) do
-    if type(G[key]) == "function" then
-        pcall(G[key])
+    if type(G[name]) == "function" then
+        pcall(G[name])
     end
 end
 
@@ -49,67 +51,79 @@ local pg = player:WaitForChild("PlayerGui")
 local LOADER =
     "https://raw.githubusercontent.com/jotahm83/EggFinder/main/EggFinder.lua"
 
+local SAVE_FILE = "EggFinderV265_State.json"
+
 local C = {
     minimum = 10,
     auto = true,
 
-    scanEvery = 1.5,
-    loadStableTime = 1.5,
     minimumEggs = 60,
-    maxLoadTime = 35,
+    stableSeconds = 1.5,
+    effectGrace = 1.0,
+    maxLoadSeconds = 35,
+    backupScanSeconds = 8,
+
+    minimumFreeSlots = 5,
+    serverPages = 4,
+    candidatePool = 50,
 
     teleportWarning = 20,
-
-    minimumFree = 5,
-    pages = 6,
-    candidatePool = 40,
-
     retryBase = 3,
-    retryMax = 15
+    retryMaximum = 18
 }
 
 local S = {
     running = true,
     found = false,
-
-    hopping = false,
+    busy = false,
     teleporting = false,
-    stalled = false,
+    scanBusy = false,
 
-    token = 0,
-    checked = 1,
-    failures = 0,
+    attemptToken = 0,
+    targetId = nil,
 
     visited = {},
     failed = {},
+    serverPool = {},
 
-    candidates = {},
+    serverCount = 1,
+    totalFailures = 0,
+    consecutiveFailures = 0,
+
     eggCount = 0,
+    candidates = {},
     unknown = 0,
 
-    scanBusy = false,
-    lastScan = 0,
-    lastMessage = "",
+    record = {
+        height = 0,
+        zone = "-",
+        rarity = "-"
+    },
 
-    target = nil,
+    lastMessage = "",
+    lastScan = 0,
     nextHop = 0,
 
+    dirty = true,
     ready = false,
-    firstSeenAt = nil,
-    stableSince = nil,
-    lastEggCount = -1,
+    stableCount = -1,
+    stableSince = 0,
+    readyAt = 0,
 
-    -- Evita llamar queue_on_teleport
-    -- repetidamente en el mismo cliente.
-    queuePrepared = false
+    queuePrepared = false,
+    folder = nil,
+    folderConnections = {},
+    loadStarted = os.clock()
 }
 
 local connections = {}
 local alertFrame
+local hop
+local scan
 
-local function bind(signal, callback)
+local function bind(signal, callback, collection)
     local connection = signal:Connect(callback)
-    table.insert(connections, connection)
+    table.insert(collection or connections, connection)
     return connection
 end
 
@@ -124,35 +138,45 @@ local function create(class, props, parent)
     return obj
 end
 
-local function rounded(obj, radius)
+local function rounded(obj, size)
     create("UICorner", {
-        CornerRadius = UDim.new(0, radius or 7)
+        CornerRadius = UDim.new(0, size or 7)
     }, obj)
 end
+
+local function log(message)
+    S.lastMessage = tostring(message)
+    print("[EGG FINDER V26.5] " .. S.lastMessage)
+end
+
+-- LIMPIAR INTERFACES ANTERIORES
 
 for _, name in ipairs({
     "EggFinderV26",
     "EggFinderV261",
     "EggFinderV262",
     "EggFinderV263",
-    "EggFinderV264"
+    "EggFinderV264",
+    "EggFinderV265"
 }) do
     local old = pg:FindFirstChild(name)
-    if old then old:Destroy() end
+    if old then
+        old:Destroy()
+    end
 end
 
 -- PANEL COMPACTO
 
 local gui = create("ScreenGui", {
-    Name = "EggFinderV264",
+    Name = "EggFinderV265",
     ResetOnSpawn = false,
     IgnoreGuiInset = true,
     DisplayOrder = 999999
 }, pg)
 
 local panel = create("Frame", {
-    Size = UDim2.fromOffset(260, 364),
-    Position = UDim2.new(0.5, -130, 0.5, -182),
+    Size = UDim2.fromOffset(260, 383),
+    Position = UDim2.new(0.5, -130, 0.5, -191),
     BackgroundColor3 = Color3.fromRGB(19, 24, 36),
     BorderSizePixel = 0,
     Active = true
@@ -161,13 +185,13 @@ local panel = create("Frame", {
 rounded(panel, 10)
 
 create("UIStroke", {
-    Color = Color3.fromRGB(55, 125, 190),
+    Color = Color3.fromRGB(58, 128, 190),
     Thickness = 1.2
 }, panel)
 
 local header = create("Frame", {
     Size = UDim2.new(1, 0, 0, 33),
-    BackgroundColor3 = Color3.fromRGB(29, 44, 70),
+    BackgroundColor3 = Color3.fromRGB(28, 44, 70),
     BorderSizePixel = 0,
     Active = true
 }, panel)
@@ -175,7 +199,7 @@ local header = create("Frame", {
 rounded(header, 10)
 
 create("TextLabel", {
-    Text = "EGG FINDER V26.4",
+    Text = "EGG FINDER V26.5",
     Position = UDim2.fromOffset(9, 0),
     Size = UDim2.new(1, -42, 1, 0),
     BackgroundTransparency = 1,
@@ -204,7 +228,7 @@ end
 
 local closeButton = button(
     "X", 230, 4, 26, 25,
-    Color3.fromRGB(160, 50, 58),
+    Color3.fromRGB(165, 52, 60),
     header
 )
 
@@ -224,13 +248,14 @@ local function label(text, x, y, w, h, size, color)
 end
 
 local status = label(
-    "Preparando...", 9, 38, 242, 35,
-    11, Color3.fromRGB(255, 215, 110)
+    "Iniciando buscador...",
+    9, 39, 242, 35, 11,
+    Color3.fromRGB(255, 215, 110)
 )
 
 label(
     "ALTURA MINIMA (STUDS)",
-    9, 77, 220, 15, 10
+    9, 78, 220, 15, 10
 )
 
 local presets = {6, 8, 10, 12, 15}
@@ -240,12 +265,12 @@ for i, n in ipairs(presets) do
     presetButtons[i] = button(
         tostring(n),
         9 + (i - 1) * 49,
-        97, 45, 25
+        98, 45, 25
     )
 end
 
 local minimumInput = create("TextBox", {
-    Position = UDim2.fromOffset(9, 128),
+    Position = UDim2.fromOffset(9, 129),
     Size = UDim2.fromOffset(242, 27),
     BackgroundColor3 = Color3.fromRGB(34, 45, 62),
     BorderSizePixel = 0,
@@ -260,61 +285,66 @@ local minimumInput = create("TextBox", {
 rounded(minimumInput, 6)
 
 local autoButton = button(
-    "AUTO: SI", 9, 163, 116, 27,
+    "AUTO: SI",
+    9, 165, 116, 27,
     Color3.fromRGB(30, 130, 95)
 )
 
 local scanButton = button(
-    "ESCANEAR", 135, 163, 116, 27
+    "ESCANEAR",
+    135, 165, 116, 27
 )
 
 local skipButton = button(
-    "SALTAR", 9, 196, 116, 27,
-    Color3.fromRGB(100, 80, 145)
+    "SALTAR",
+    9, 199, 116, 27,
+    Color3.fromRGB(105, 80, 145)
 )
 
 local pauseButton = button(
-    "PAUSAR", 135, 196, 116, 27,
+    "PAUSAR",
+    135, 199, 116, 27,
     Color3.fromRGB(130, 90, 40)
 )
 
 local stats = label(
     "Servidores: 1 | Huevos: 0",
-    9, 232, 242, 23, 10,
+    9, 234, 242, 20, 10,
     Color3.fromRGB(180, 220, 255)
 )
 
+local recordLabel = label(
+    "Record: 0.00 studs",
+    9, 258, 242, 20, 10,
+    Color3.fromRGB(255, 210, 115)
+)
+
 local results = label(
-    "Esperando primer escaneo...",
-    9, 258, 242, 58, 10
+    "Esperando los huevos...",
+    9, 284, 242, 50, 10
 )
 
 results.TextYAlignment = Enum.TextYAlignment.Top
 
 local copyButton = button(
-    "COPIAR", 9, 326, 116, 27
+    "COPIAR",
+    9, 345, 116, 27
 )
 
 local restartButton = button(
-    "REINICIAR", 135, 326, 116, 27,
+    "REINICIAR",
+    135, 345, 116, 27,
     Color3.fromRGB(95, 65, 130)
 )
 
 local function setStatus(text, color)
     status.Text = text
-
     status.TextColor3 =
         color or Color3.fromRGB(255, 215, 110)
 end
 
-local function log(text)
-    S.lastMessage = tostring(text)
-    print("[EGG FINDER V26.4] " .. tostring(text))
-end
-
-local function updateAuto()
-    autoButton.Text =
-        C.auto and "AUTO: SI" or "AUTO: NO"
+local function refreshAuto()
+    autoButton.Text = C.auto and "AUTO: SI" or "AUTO: NO"
 
     autoButton.BackgroundColor3 =
         C.auto
@@ -322,7 +352,7 @@ local function updateAuto()
         or Color3.fromRGB(125, 65, 70)
 end
 
-local function updatePresets()
+local function refreshPresets()
     for i, b in ipairs(presetButtons) do
         b.BackgroundColor3 =
             C.minimum == presets[i]
@@ -331,11 +361,20 @@ local function updatePresets()
     end
 end
 
+local function refreshRecord()
+    recordLabel.Text = string.format(
+        "Record: %.2f studs | %s",
+        S.record.height,
+        S.record.zone
+    )
+end
+
 for i, n in ipairs(presets) do
     bind(presetButtons[i].MouseButton1Click, function()
         C.minimum = n
         minimumInput.Text = tostring(n)
-        updatePresets()
+        refreshPresets()
+        S.dirty = true
     end)
 end
 
@@ -348,10 +387,11 @@ bind(minimumInput.FocusLost, function()
         minimumInput.Text = tostring(C.minimum)
     end
 
-    updatePresets()
+    refreshPresets()
+    S.dirty = true
 end)
 
--- IDENTIFICACION DE ZONAS
+-- ZONAS PRIORITARIAS
 
 local zones = {
     {
@@ -382,10 +422,10 @@ end
 local function matchZone(text)
     local n = normalize(text)
 
-    for _, z in ipairs(zones) do
-        for _, alias in ipairs(z.aliases) do
+    for _, zone in ipairs(zones) do
+        for _, alias in ipairs(zone.aliases) do
             if n:find(alias, 1, true) then
-                return z.name
+                return zone.name
             end
         end
     end
@@ -398,7 +438,6 @@ local function zoneFromTree(obj)
 
     while node and node ~= workspace do
         local z = matchZone(node.Name)
-
         if z then return z end
 
         for _, key in ipairs({
@@ -421,7 +460,7 @@ local function zoneFromTree(obj)
     return nil
 end
 
-local function objectPosition(obj)
+local function positionOf(obj)
     if obj:IsA("BasePart") then
         return obj.Position
     end
@@ -437,25 +476,38 @@ local function objectPosition(obj)
     return nil
 end
 
-local function collectNests()
+-- CACHE DE NIDOS
+-- Solo se reconstruye cuando es necesario.
+
+local nestCache = {}
+local nestCacheAt = 0
+
+local function getNests()
+    if #nestCache > 0
+    and os.clock() - nestCacheAt < 60 then
+        return nestCache
+    end
+
     local world = workspace:FindFirstChild("World")
     local areas = world and world:FindFirstChild("Areas")
     local guards = areas and areas:FindFirstChild("GuardAreas")
 
     local nests = {}
 
-    if not guards then return nests end
-
-    for _, obj in ipairs(guards:GetDescendants()) do
-        if obj:IsA("BasePart")
-        and obj.Name == "EggFitBounds" then
-
-            table.insert(nests, {
-                pos = obj.Position,
-                zone = zoneFromTree(obj)
-            })
+    if guards then
+        for _, obj in ipairs(guards:GetDescendants()) do
+            if obj:IsA("BasePart")
+            and obj.Name == "EggFitBounds" then
+                table.insert(nests, {
+                    pos = obj.Position,
+                    zone = zoneFromTree(obj)
+                })
+            end
         end
     end
+
+    nestCache = nests
+    nestCacheAt = os.clock()
 
     return nests
 end
@@ -465,30 +517,29 @@ local function eggZone(egg, nests)
 
     if direct then return direct end
 
-    local pos = objectPosition(egg)
-
+    local pos = positionOf(egg)
     if not pos then return nil end
 
     local nearest
-    local distance = math.huge
+    local minDistance = math.huge
 
     for _, nest in ipairs(nests) do
         local d = (nest.pos - pos).Magnitude
 
-        if d < distance then
-            distance = d
+        if d < minDistance then
+            minDistance = d
             nearest = nest
         end
     end
 
-    if nearest and distance <= 35 then
+    if nearest and minDistance <= 35 then
         return nearest.zone
     end
 
     return nil
 end
 
--- ALTURA FISICA VISIBLE ESTIMADA
+-- ALTURA VISIBLE ESTIMADA
 
 local function eggHeight(egg)
     local low = math.huge
@@ -537,8 +588,8 @@ local function eggHeight(egg)
     return 0
 end
 
--- DETECTOR DE EFECTOS ESPECIALES
--- MANTIENE LA LOGICA DE V26.3
+-- DETECCION DE EFECTOS
+-- Conserva los criterios de V26.4.
 
 local function inspectEffects(egg)
     local particles = 0
@@ -546,7 +597,6 @@ local function inspectEffects(egg)
     local beams = 0
     local trails = 0
     local lights = 0
-
     local pink = false
 
     for _, obj in ipairs(egg:GetDescendants()) do
@@ -593,7 +643,7 @@ local function inspectEffects(egg)
     return special, rarity
 end
 
--- ALERTA
+-- ALERTA DE HUEVO ENCONTRADO
 
 local function dismissAlert()
     if alertFrame then
@@ -689,17 +739,73 @@ local function showFound(candidate)
     end
 end
 
--- CARGA INTELIGENTE
+-- DETECCION DE CAMBIOS EN HUEVOS
 
-local function getEggs()
-    local folder =
-        workspace:FindFirstChild("AreaEggSlotsClient")
-
-    if not folder then
-        return {}
+local function clearFolderConnections()
+    for _, c in ipairs(S.folderConnections) do
+        pcall(function()
+            c:Disconnect()
+        end)
     end
 
+    S.folderConnections = {}
+end
+
+local function getEggFolder()
+    return workspace:FindFirstChild(
+        "AreaEggSlotsClient"
+    )
+end
+
+local function watchFolder()
+    local folder = getEggFolder()
+
+    if folder == S.folder then
+        return
+    end
+
+    clearFolderConnections()
+    S.folder = folder
+
+    S.ready = false
+    S.dirty = true
+    S.stableCount = -1
+    S.stableSince = os.clock()
+
+    if not folder then return end
+
+    bind(folder.ChildAdded, function()
+        S.dirty = true
+        S.ready = false
+        S.stableSince = os.clock()
+    end, S.folderConnections)
+
+    bind(folder.ChildRemoved, function()
+        S.dirty = true
+        S.ready = false
+        S.stableSince = os.clock()
+    end, S.folderConnections)
+
+    -- Algunos efectos visuales aparecen
+    -- despues de que el modelo ya existe.
+    bind(folder.DescendantAdded, function(obj)
+        if obj:IsA("ParticleEmitter")
+        or obj:IsA("Highlight")
+        or obj:IsA("Beam")
+        or obj:IsA("Trail")
+        or obj:IsA("PointLight")
+        or obj:IsA("SpotLight")
+        or obj:IsA("SurfaceLight") then
+            S.dirty = true
+        end
+    end, S.folderConnections)
+end
+
+local function getEggs()
+    local folder = getEggFolder()
     local eggs = {}
+
+    if not folder then return eggs end
 
     for _, egg in ipairs(folder:GetChildren()) do
         if egg:IsA("Model")
@@ -711,35 +817,41 @@ local function getEggs()
     return eggs
 end
 
-local function updateLoading()
+local function updateReady()
+    watchFolder()
+
     local eggs = getEggs()
     local count = #eggs
     local now = os.clock()
 
     S.eggCount = count
 
-    if count ~= S.lastEggCount then
-        S.lastEggCount = count
+    if count ~= S.stableCount then
+        S.stableCount = count
         S.stableSince = now
+        S.dirty = true
+        S.ready = false
     end
 
     if count >= C.minimumEggs
-    and S.stableSince
-    and now - S.stableSince >= C.loadStableTime then
-        S.ready = true
-        return true
+    and now - S.stableSince >= C.stableSeconds then
+        if not S.ready then
+            S.ready = true
+            S.readyAt = now
+            S.dirty = true
+        end
     end
 
-    return false
+    return S.ready
 end
 
--- ESCANEO
+-- ESCANEO OPTIMIZADO
 
-local function scan()
+scan = function()
     if not S.running
     or S.found
-    or S.hopping
     or S.teleporting
+    or S.busy
     or S.scanBusy then
         return
     end
@@ -748,7 +860,7 @@ local function scan()
 
     local ok, err = pcall(function()
         local eggs = getEggs()
-        local nests = collectNests()
+        local nests = getNests()
 
         S.eggCount = #eggs
 
@@ -773,9 +885,15 @@ local function scan()
 
                     table.insert(candidates, candidate)
 
-                    -- UNICAMENTE CUMPLE SI
-                    -- ALTURA >= MINIMO
+                    if height > S.record.height then
+                        S.record = {
+                            height = height,
+                            zone = zone,
+                            rarity = rarity
+                        }
+                    end
 
+                    -- SOLO EL MINIMO DETIENE BUSQUEDA.
                     if height >= C.minimum
                     and (
                         not best
@@ -791,18 +909,22 @@ local function scan()
 
         S.candidates = candidates
         S.unknown = unknown
+        S.lastScan = os.clock()
+        S.dirty = false
+
+        refreshRecord()
 
         stats.Text = string.format(
-            "Servidores: %d | Huevos: %d | Esp.: %d",
-            S.checked,
+            "Serv: %d | Huevos: %d | Fallos: %d",
+            S.serverCount,
             S.eggCount,
-            #candidates
+            S.totalFailures
         )
 
         if best then
             S.found = true
             C.auto = false
-            updateAuto()
+            refreshAuto()
 
             setStatus(
                 "¡HUEVO ENCONTRADO!",
@@ -820,7 +942,7 @@ local function scan()
                 "ENCONTRADO | "
                 .. best.zone
                 .. " | "
-                .. best.height
+                .. tostring(best.height)
             )
 
             showFound(best)
@@ -835,30 +957,30 @@ local function scan()
             local largest = candidates[1]
 
             results.Text = string.format(
-                "Mayor: %s\n%.2f / %.2f studs\nMenor al minimo: continuar",
-                largest.zone,
+                "Mayor actual: %.2f studs\n%s\nMinimo: %.2f | CONTINUAR",
                 largest.height,
+                largest.zone,
                 C.minimum
             )
         else
             results.Text =
-                "Sin especiales validos.\nContinuar buscando..."
+                "Sin candidatos especiales.\nContinuar buscando..."
         end
 
         if unknown > 0 then
             results.Text =
                 results.Text
                 .. "\nSin zona: "
-                .. unknown
+                .. tostring(unknown)
         end
 
         setStatus(
-            "Buscando | Minimo "
+            "Analizado | Minimo "
             .. tostring(C.minimum)
         )
 
         log(string.format(
-            "SCAN | Huevos=%d | Especiales=%d | SinZona=%d",
+            "SCAN | Huevos=%d | Esp=%d | SinZona=%d",
             S.eggCount,
             #candidates,
             unknown
@@ -868,22 +990,23 @@ local function scan()
     S.scanBusy = false
 
     if not ok then
-        warn("[EGG FINDER V26.4] " .. tostring(err))
-        setStatus("Error al escanear")
+        S.dirty = true
+        warn("[EGG FINDER V26.5] " .. tostring(err))
+        setStatus("Error de analisis; reintentando")
     end
 end
 
--- CONSULTA DE SERVIDORES
+-- HTTP Y CACHE DE SERVIDORES
 
 local function httpGet(url)
-    local requestFunction =
+    local req =
         (syn and syn.request)
         or http_request
         or request
 
-    if type(requestFunction) == "function" then
+    if type(req) == "function" then
         local ok, response = pcall(function()
-            return requestFunction({
+            return req({
                 Url = url,
                 Method = "GET",
                 Headers = {
@@ -910,11 +1033,11 @@ local function httpGet(url)
     return nil
 end
 
-local function findServers()
+local function refillServers()
     local pool = {}
     local cursor = nil
 
-    for page = 1, C.pages do
+    for page = 1, C.serverPages do
         local url =
             "https://games.roblox.com/v1/games/"
             .. tostring(game.PlaceId)
@@ -929,7 +1052,7 @@ local function findServers()
         local body = httpGet(url)
 
         if not body then
-            return nil, "API de servidores inaccesible"
+            return false, "API de servidores inaccesible"
         end
 
         local ok, data = pcall(function()
@@ -937,7 +1060,7 @@ local function findServers()
         end)
 
         if not ok or type(data) ~= "table" then
-            return nil, "Lista de servidores invalida"
+            return false, "Lista de servidores invalida"
         end
 
         for _, server in ipairs(data.data or {}) do
@@ -949,7 +1072,7 @@ local function findServers()
             and server.id ~= game.JobId
             and not S.visited[server.id]
             and not S.failed[server.id]
-            and free >= C.minimumFree then
+            and free >= C.minimumFreeSlots then
                 table.insert(pool, {
                     id = server.id,
                     free = free,
@@ -970,12 +1093,99 @@ local function findServers()
         return a.players < b.players
     end)
 
-    return pool
+    -- Mantener un lote razonable.
+    local trimmed = {}
+
+    for i = 1, math.min(
+        #pool, C.candidatePool
+    ) do
+        table.insert(trimmed, pool[i])
+    end
+
+    S.serverPool = trimmed
+
+    return true
 end
 
--- GUARDAR CONFIGURACION PARA EL SIGUIENTE SERVIDOR
+local function nextServer()
+    if #S.serverPool == 0 then
+        local ok, err = refillServers()
 
-local function queueNext()
+        if not ok then
+            return nil, err
+        end
+    end
+
+    while #S.serverPool > 0 do
+        local index = math.random(
+            1, #S.serverPool
+        )
+
+        local target = table.remove(
+            S.serverPool,
+            index
+        )
+
+        if not S.visited[target.id]
+        and not S.failed[target.id] then
+            return target
+        end
+    end
+
+    return nil, "No hay servidores nuevos"
+end
+
+-- PERSISTENCIA OPCIONAL
+-- Algunos executors admiten readfile/writefile.
+
+local function snapshot()
+    local visited = {}
+    local failed = {}
+
+    for id in pairs(S.visited) do
+        table.insert(visited, id)
+        if #visited >= 120 then break end
+    end
+
+    for id in pairs(S.failed) do
+        table.insert(failed, id)
+        if #failed >= 80 then break end
+    end
+
+    return {
+        minimum = C.minimum,
+        auto = C.auto,
+        checked = S.serverCount,
+        failures = S.totalFailures,
+
+        record = S.record,
+
+        visited = visited,
+        failed = failed
+    }
+end
+
+local function saveState()
+    if type(writefile) ~= "function" then
+        return false
+    end
+
+    local ok = pcall(function()
+        writefile(
+            SAVE_FILE,
+            HS:JSONEncode(snapshot())
+        )
+    end)
+
+    return ok
+end
+
+local function prepareQueue()
+    -- Se instala una unica cola por sesion.
+    -- El cargador intentara recuperar el estado
+    -- actualizado desde un archivo, si Delta
+    -- dispone de sistema de archivos.
+
     if S.queuePrepared then
         return true
     end
@@ -989,39 +1199,33 @@ local function queueNext()
         return false
     end
 
-    local visited = {}
-    local failed = {}
+    local fallback = HS:JSONEncode(snapshot())
 
-    for id in pairs(S.visited) do
-        table.insert(visited, id)
+    local code = [[
+local g = getgenv()
+if g.EFV265QueuedBoot then return end
+g.EFV265QueuedBoot = true
 
-        if #visited >= 120 then
-            break
-        end
+local fallback = ]] .. string.format("%q", fallback) .. [[
+
+local saved = fallback
+
+if type(readfile) == "function" then
+    local ok, data = pcall(function()
+        return readfile("EggFinderV265_State.json")
+    end)
+
+    if ok and type(data) == "string" then
+        saved = data
     end
+end
 
-    for id in pairs(S.failed) do
-        table.insert(failed, id)
+g.EggFinderV265Resume = saved
 
-        if #failed >= 80 then
-            break
-        end
-    end
-
-    local data = HS:JSONEncode({
-        minimum = C.minimum,
-        auto = C.auto,
-        checked = S.checked,
-        visited = visited,
-        failed = failed
-    })
-
-    local code =
-        "getgenv().EggFinderV264Resume="
-        .. string.format("%q", data)
-        .. "\nloadstring(game:HttpGet("
-        .. string.format("%q", LOADER)
-        .. "))()"
+loadstring(game:HttpGet(
+    ]] .. string.format("%q", LOADER) .. [[
+))()
+]]
 
     local ok = pcall(function()
         queue(code)
@@ -1034,62 +1238,71 @@ local function queueNext()
     return ok
 end
 
--- MANEJO DE ERRORES
--- Solo reintenta ante un fallo confirmado.
+-- ERRORES DE TELETRANSPORTE
 
 local function retryDelay()
-    local exponent = math.min(S.failures - 1, 4)
+    local exponent = math.min(
+        math.max(S.consecutiveFailures - 1, 0),
+        4
+    )
 
     return math.min(
-        C.retryBase * (2 ^ math.max(exponent, 0)),
-        C.retryMax
+        C.retryBase * (2 ^ exponent),
+        C.retryMaximum
     )
 end
 
 local function confirmedFailure(reason)
-    if not S.running or S.found then
+    if not S.running
+    or S.found
+    or not S.teleporting then
         return
     end
 
-    if S.target then
-        S.failed[S.target] = true
+    if S.targetId then
+        S.failed[S.targetId] = true
     end
 
-    S.token = S.token + 1
-    S.teleporting = false
-    S.stalled = false
-    S.hopping = false
+    S.attemptToken = S.attemptToken + 1
 
-    S.target = nil
-    S.failures = S.failures + 1
+    S.teleporting = false
+    S.busy = false
+    S.targetId = nil
+
+    S.totalFailures = S.totalFailures + 1
+    S.consecutiveFailures =
+        S.consecutiveFailures + 1
 
     local delay = retryDelay()
+
     S.nextHop = os.clock() + delay
 
     setStatus(
-        "Error de servidor | Reintento "
-        .. delay
+        "Teleport fallido | Reintento "
+        .. tostring(delay)
         .. "s"
     )
 
     results.Text =
-        "Fallo confirmado.\n"
-        .. "Se buscara otro servidor."
+        "Servidor descartado.\n"
+        .. "Buscando otro destino..."
 
     log(
-        "TELEPORT FALLIDO | "
+        "FALLO | "
         .. tostring(reason)
-        .. " | Espera="
-        .. delay
+        .. " | Reintento="
+        .. tostring(delay)
     )
+
+    saveState()
 end
 
--- TELETRANSPORTE CONTROLADO
+-- UN SOLO TELETRANSPORTE A LA VEZ
 
-local function hop(force)
+hop = function(force)
     if not S.running
     or S.found
-    or S.hopping
+    or S.busy
     or S.teleporting then
         return
     end
@@ -1098,76 +1311,63 @@ local function hop(force)
         return
     end
 
-    S.hopping = true
+    S.busy = true
 
-    setStatus(
-        "Buscando servidor con pocos jugadores..."
-    )
+    setStatus("Seleccionando servidor...")
 
-    local servers, err = findServers()
+    local target, err = nextServer()
 
     if not S.running then
-        S.hopping = false
+        S.busy = false
         return
     end
 
-    if not servers then
-        S.hopping = false
-        C.auto = false
-        updateAuto()
+    if not target then
+        S.busy = false
 
-        setStatus(tostring(err))
-        log(tostring(err))
+        -- No desactivar AUTO ante un problema
+        -- temporal de consulta.
+        S.nextHop = os.clock() + 15
+
+        setStatus(
+            "Esperando nuevos servidores..."
+        )
+
+        log("SIN SERVIDORES | " .. tostring(err))
         return
     end
-
-    if #servers == 0 then
-        S.hopping = false
-        C.auto = false
-        updateAuto()
-
-        setStatus("No hay servidores nuevos")
-        return
-    end
-
-    local count = math.min(
-        #servers,
-        C.candidatePool
-    )
-
-    -- Eleccion aleatoria entre servidores
-    -- poco poblados y con plazas disponibles.
-
-    local target = servers[math.random(1, count)]
 
     S.visited[game.JobId] = true
     S.visited[target.id] = true
-    S.target = target.id
+    S.targetId = target.id
 
-    local queued = queueNext()
+    saveState()
 
-    S.token = S.token + 1
-    local token = S.token
+    local queued = prepareQueue()
 
-    S.hopping = false
+    S.attemptToken = S.attemptToken + 1
+    local token = S.attemptToken
+
     S.teleporting = true
-    S.stalled = false
+    S.busy = false
 
     setStatus(
         "Entrando | "
-        .. target.players
+        .. tostring(target.players)
         .. " jugadores"
     )
 
-    results.Text =
-        "Plazas libres: "
-        .. target.free
-        .. "\nPreparado tras teleport: "
-        .. tostring(queued)
+    results.Text = string.format(
+        "Plazas libres: %d\nReinicio preparado: %s",
+        target.free,
+        tostring(queued)
+    )
 
     log(
-        "TELEPORT INICIADO | "
+        "TELEPORT | "
         .. target.id
+        .. " | Queue="
+        .. tostring(queued)
     )
 
     task.spawn(function()
@@ -1181,42 +1381,37 @@ local function hop(force)
 
         if not ok
         and S.running
-        and S.token == token
+        and S.attemptToken == token
         and S.teleporting then
             confirmedFailure(errText)
         end
     end)
 
-    -- IMPORTANTE:
-    -- A diferencia de V26.3, el temporizador
-    -- no habilita otro teletransporte.
-    -- Solo muestra una advertencia.
-
+    -- ADVERTENCIA SIN DUPLICAR TELEPORT
     task.delay(C.teleportWarning, function()
         if not S.running
         or S.found
-        or S.token ~= token
+        or S.attemptToken ~= token
         or not S.teleporting then
             return
         end
 
-        S.stalled = true
-
         setStatus(
-            "Teleport demorado (sin duplicar)",
+            "Teleport demorado: esperando Roblox",
             Color3.fromRGB(255, 175, 90)
         )
 
         results.Text =
-            "Roblox aun procesa el cambio.\n"
-            .. "Esperando error confirmado.\n"
-            .. "Si queda bloqueado, revisa Roblox."
+            "Roblox sigue procesando.\n"
+            .. "No se lanzara otro teleport\n"
+            .. "hasta recibir un fallo."
 
-        log("TELEPORT DEMORADO | " .. target.id)
+        log(
+            "TELEPORT DEMORADO | "
+            .. tostring(target.id)
+        )
     end)
 end
-
--- EVENTO DE FALLO OFICIAL
 
 bind(TS.TeleportInitFailed, function(
     failedPlayer,
@@ -1224,10 +1419,6 @@ bind(TS.TeleportInitFailed, function(
     message
 )
     if failedPlayer ~= player then
-        return
-    end
-
-    if not S.running or S.found then
         return
     end
 
@@ -1242,20 +1433,19 @@ bind(TS.TeleportInitFailed, function(
     )
 end)
 
--- REANUDAR BUSQUEDA DESPUES DE ENCONTRAR
+-- REANUDAR DESPUES DE ENCONTRAR
 
-local function resume()
+local function resumeSearch()
     if S.teleporting then
-        setStatus("Espera a terminar el teletransporte")
+        setStatus("Teleport activo: esperar")
         return
     end
 
     S.found = false
-
     dismissAlert()
 
     C.auto = true
-    updateAuto()
+    refreshAuto()
 
     S.nextHop = 0
 
@@ -1275,22 +1465,22 @@ end
 
 bind(autoButton.MouseButton1Click, function()
     if S.found then
-        resume()
+        resumeSearch()
         return
     end
 
     C.auto = not C.auto
-    updateAuto()
+    refreshAuto()
 
     if C.auto then
-        setStatus("AUTO HOP ACTIVADO")
         S.nextHop = 0
+        setStatus("AUTO HOP ACTIVADO")
 
-        -- Si ya hay un intento en marcha,
-        -- NO se lanza otro.
+        -- Si el servidor ya fue analizado,
+        -- podemos buscar otro inmediatamente.
         if S.ready
-        and not S.teleporting
-        and not S.hopping then
+        and not S.dirty
+        and not S.teleporting then
             task.spawn(function()
                 hop(true)
             end)
@@ -1301,15 +1491,15 @@ bind(autoButton.MouseButton1Click, function()
 end)
 
 bind(scanButton.MouseButton1Click, function()
-    if not S.found
-    and not S.teleporting then
+    if not S.found then
+        S.dirty = true
         task.spawn(scan)
     end
 end)
 
 bind(skipButton.MouseButton1Click, function()
     if S.found then
-        resume()
+        resumeSearch()
         return
     end
 
@@ -1328,24 +1518,33 @@ end)
 
 bind(pauseButton.MouseButton1Click, function()
     C.auto = false
-    updateAuto()
+    refreshAuto()
 
     setStatus("BUSQUEDA PAUSADA")
 end)
 
 bind(copyButton.MouseButton1Click, function()
     local lines = {
-        "EGG FINDER V26.4",
+        "EGG FINDER V26.5",
         "JobId: " .. tostring(game.JobId),
         "PlaceId: " .. tostring(game.PlaceId),
+
         "Minimo: " .. tostring(C.minimum),
-        "Auto: " .. tostring(C.auto),
+        "AUTO: " .. tostring(C.auto),
+
         "Huevos: " .. tostring(S.eggCount),
-        "Servidores: " .. tostring(S.checked),
-        "Fallos: " .. tostring(S.failures),
-        "Teleportando: " .. tostring(S.teleporting),
-        "Demorado: " .. tostring(S.stalled),
-        "Encontrado: " .. tostring(S.found),
+        "Servidores: " .. tostring(S.serverCount),
+        "Fallos: " .. tostring(S.totalFailures),
+
+        "Teleport activo: "
+            .. tostring(S.teleporting),
+
+        "Record: "
+            .. string.format("%.2f", S.record.height),
+
+        "Record zona: " .. S.record.zone,
+        "Record rareza: " .. S.record.rarity,
+
         "Sin zona: " .. tostring(S.unknown),
         "Ultimo: " .. S.lastMessage
     }
@@ -1359,7 +1558,8 @@ bind(copyButton.MouseButton1Click, function()
         ))
     end
 
-    local clipboard = setclipboard or toclipboard
+    local clipboard =
+        setclipboard or toclipboard
 
     if type(clipboard) == "function" then
         local ok = pcall(function()
@@ -1371,37 +1571,42 @@ bind(copyButton.MouseButton1Click, function()
             or "ERROR AL COPIAR"
         )
     else
-        setStatus("PORTAPAPELES NO DISPONIBLE")
+        setStatus("SIN PORTAPAPELES")
     end
 end)
 
 bind(restartButton.MouseButton1Click, function()
     if S.teleporting then
-        setStatus("No reiniciar durante teleport")
+        setStatus("Teleport activo: esperar")
         return
     end
 
     S.found = false
-    S.stalled = false
-
     dismissAlert()
 
     C.auto = false
-    updateAuto()
+    refreshAuto()
 
     S.ready = false
-    S.lastEggCount = -1
-    S.stableSince = nil
+    S.dirty = true
+    S.stableCount = -1
+    S.stableSince = os.clock()
+    S.loadStarted = os.clock()
 
     setStatus("REINICIADO")
 
-    task.spawn(scan)
+    task.spawn(function()
+        updateReady()
+        scan()
+    end)
 end)
 
 local function stop()
     S.running = false
     C.auto = false
-    S.token = S.token + 1
+    S.attemptToken = S.attemptToken + 1
+
+    clearFolderConnections()
 
     for _, connection in ipairs(connections) do
         pcall(function()
@@ -1411,14 +1616,14 @@ local function stop()
 end
 
 G.EggFinderStop = stop
-G.EggFinderV264Stop = stop
+G.EggFinderV265Stop = stop
 
 bind(closeButton.MouseButton1Click, function()
     stop()
     gui:Destroy()
 end)
 
--- PANEL ARRASTRABLE
+-- ARRASTRAR PANEL
 
 do
     local dragging = false
@@ -1466,10 +1671,21 @@ do
     end)
 end
 
--- RECUPERAR DATOS AL CAMBIAR DE SERVIDOR
+-- RESTAURAR ESTADO TRAS TELETRANSPORTE
 
 do
-    local saved = G.EggFinderV264Resume
+    local saved = G.EggFinderV265Resume
+
+    if type(saved) ~= "string"
+    and type(readfile) == "function" then
+        local ok, data = pcall(function()
+            return readfile(SAVE_FILE)
+        end)
+
+        if ok and type(data) == "string" then
+            saved = data
+        end
+    end
 
     if type(saved) == "string" then
         local ok, data = pcall(function()
@@ -1482,8 +1698,22 @@ do
 
             C.auto = data.auto == true
 
-            S.checked =
+            S.serverCount =
                 (tonumber(data.checked) or 1) + 1
+
+            S.totalFailures =
+                tonumber(data.failures) or 0
+
+            if type(data.record) == "table" then
+                S.record = {
+                    height =
+                        tonumber(data.record.height) or 0,
+                    zone =
+                        tostring(data.record.zone or "-"),
+                    rarity =
+                        tostring(data.record.rarity or "-")
+                }
+            end
 
             for _, id in ipairs(data.visited or {}) do
                 S.visited[id] = true
@@ -1493,92 +1723,90 @@ do
                 S.failed[id] = true
             end
         end
-
-        G.EggFinderV264Resume = nil
     end
+
+    G.EggFinderV265Resume = nil
 end
 
 S.visited[game.JobId] = true
 
 minimumInput.Text = tostring(C.minimum)
-updatePresets()
-updateAuto()
+
+refreshPresets()
+refreshAuto()
+refreshRecord()
 
 log(
-    "V26.4 INICIADO | Minimo="
+    "V26.5 INICIADO | Minimo="
     .. tostring(C.minimum)
 )
 
 -- BUCLE PRINCIPAL
 
 task.spawn(function()
-    setStatus("Esperando huevos...")
-
-    local loadStarted = os.clock()
+    setStatus("Cargando huevos...")
 
     while S.running do
         if not S.found
         and not S.teleporting
-        and not S.hopping then
+        and not S.busy then
 
-            -- No espera siempre 12 segundos.
-            -- Detecta cuando hay suficientes huevos
-            -- y su numero permanece estable.
+            local ready = updateReady()
+            local now = os.clock()
 
-            if not S.ready then
-                updateLoading()
+            if ready then
+                -- Pequeño margen para que terminen
+                -- de aparecer los efectos visuales.
+                local graceComplete =
+                    now - S.readyAt >= C.effectGrace
 
-                if S.ready then
-                    setStatus("Huevos cargados: escaneando")
+                if graceComplete then
+                    local needScan =
+                        S.dirty
+                        or now - S.lastScan
+                            >= C.backupScanSeconds
 
-                    scan()
+                    if needScan then
+                        scan()
+                    end
 
-                    S.lastScan = os.clock()
-                    S.nextHop = os.clock() + 1.5
+                    if C.auto
+                    and not S.found
+                    and not S.dirty
+                    and not S.scanBusy
+                    and not S.teleporting
+                    and now >= S.nextHop then
 
-                elseif os.clock() - loadStarted
-                    >= C.maxLoadTime then
+                        S.nextHop = now + 5
 
-                    C.auto = false
-                    updateAuto()
-
-                    setStatus(
-                        "Carga incompleta: revisar"
-                    )
-
-                    results.Text =
-                        "Huevos: "
-                        .. S.eggCount
-                        .. "\nEsperando carga completa."
-
-                    -- No desactivar el propio escaneo:
-                    -- si luego termina de cargar, S.ready
-                    -- pasara a true y podra reactivarse AUTO.
+                        task.spawn(function()
+                            hop(false)
+                        end)
+                    end
                 end
 
+            elseif now - S.loadStarted
+                >= C.maxLoadSeconds then
+
+                -- No forzar saltos mientras faltan
+                -- huevos: puede ser una carga parcial.
+                setStatus(
+                    "Carga incompleta: "
+                    .. tostring(S.eggCount)
+                    .. " huevos"
+                )
+
+                -- Mantener AUTO seleccionado.
+                -- Si completan la carga, continuara.
             else
-                if os.clock() - S.lastScan
-                    >= C.scanEvery then
-
-                    scan()
-                    S.lastScan = os.clock()
-                end
-
-                if C.auto
-                and not S.found
-                and not S.hopping
-                and not S.teleporting
-                and os.clock() >= S.nextHop then
-
-                    S.nextHop = os.clock() + 5
-
-                    task.spawn(function()
-                        hop(false)
-                    end)
-                end
+                setStatus(
+                    "Cargando: "
+                    .. tostring(S.eggCount)
+                    .. " huevos"
+                )
             end
         end
 
-        task.wait(0.5)
+        task.wait(0.3)
     end
 end)
